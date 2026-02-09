@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LubyRuffy/gptb2o/auth"
@@ -49,12 +52,45 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("gptb2o server listening on http://%s%s", *listen, *basePath)
-	log.Printf("try: curl http://%s%s/models", *listen, *basePath)
-	log.Printf("try: curl http://%s%s/responses -H 'Content-Type: application/json' -d '{\"model\":\"chatgpt/codex/gpt-5.1\",\"input\":\"hi\",\"stream\":false}'", *listen, *basePath)
-	log.Printf("OpenAI SDK base_url: http://%s%s", *listen, *basePath)
+	// `--listen :12345`/`0.0.0.0:12345`/`[::]:12345` binds to all interfaces; for curl examples
+	// we prefer a localhost address that works for most users.
+	exampleAddr := addrForLocalClient(*listen)
+	log.Printf("gptb2o server listening on http://%s%s", exampleAddr, *basePath)
+	log.Printf("try: curl http://%s%s/models", exampleAddr, *basePath)
+	log.Printf("try: curl http://%s%s/responses -H 'Content-Type: application/json' -d '{\"model\":\"chatgpt/codex/gpt-5.1\",\"input\":\"hi\",\"stream\":false}'", exampleAddr, *basePath)
+	log.Printf("OpenAI SDK base_url: http://%s%s", exampleAddr, *basePath)
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println(err)
 	}
+}
+
+func addrForLocalClient(listen string) string {
+	listen = strings.TrimSpace(listen)
+	host, port, ok := splitHostPortLoose(listen)
+	if !ok {
+		return listen
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func splitHostPortLoose(addr string) (host, port string, ok bool) {
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		return host, port, true
+	}
+	// Accept bracketless IPv6 like "::1:8080" by splitting on the last ':' if port is numeric.
+	last := strings.LastIndex(addr, ":")
+	if last <= 0 || last+1 >= len(addr) {
+		return "", "", false
+	}
+	host = addr[:last]
+	port = addr[last+1:]
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", "", false
+	}
+	return host, port, true
 }

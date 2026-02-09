@@ -162,7 +162,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 			require.Equal(t, "message", payload.Input[0].Type)
 			require.Equal(t, "user", payload.Input[0].Role)
 			require.Equal(t, "hello", payload.Input[0].Content)
-			require.Empty(t, payload.Instructions)
+			require.NotEmpty(t, payload.Instructions)
 		case 2:
 			require.Equal(t, "gpt-5.1", payload.Model)
 			require.Len(t, payload.Input, 2)
@@ -216,4 +216,88 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 		responsesHandler(w, req)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
+}
+
+func TestResponses_CodexModel_DefaultInstructions_WhenUndefined(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Model        string `json:"model"`
+			Instructions string `json:"instructions"`
+			Stream       bool   `json:"stream"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.True(t, payload.Stream)
+		require.NotEmpty(t, strings.TrimSpace(payload.Instructions))
+		require.NotEqual(t, "[undefined]", strings.TrimSpace(payload.Instructions))
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],
+  "instructions":"[undefined]",
+  "stream":false
+}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "resp_ok", resp["id"])
+}
+
+func TestResponses_NonCodexModel_DefaultInstructions_WhenEmpty(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Model        string `json:"model"`
+			Instructions string `json:"instructions"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.1", payload.Model)
+		require.NotEmpty(t, strings.TrimSpace(payload.Instructions))
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
 }

@@ -13,6 +13,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+const defaultAgentName = "gptb2o-adk"
+
 func main() {
 	var (
 		model      = flag.String("model", gptb2o.ModelNamespace+"gpt-5.1", "model id (supports legacy opencode/codex/*)")
@@ -45,6 +47,7 @@ func main() {
 	}
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
+		Name:  defaultAgentName,
 		Model: m,
 	})
 	if err != nil {

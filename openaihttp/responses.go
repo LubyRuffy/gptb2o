@@ -78,7 +78,14 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 			return
 		}
 
-		instructions := mergeInstructions(req.Instructions, systemInstructions)
+		normalizedModel := gptb2o.NormalizeModelID(req.Model)
+		instructions := mergeInstructions(normalizeUndefinedString(req.Instructions), normalizeUndefinedString(systemInstructions))
+		if instructions == "" {
+			// ChatGPT backend `/backend-api/codex/responses` 在某些情况下会要求 instructions 字段存在且为有效值，
+			// 即使调用方没有显式提供（例如 CLI curl 直接请求）。
+			// 同时部分客户端会把未定义字段序列化为 "[undefined]"，这里统一清洗并补默认值。
+			instructions = defaultCodexInstructions
+		}
 		tools := backend.ToolsFromOpenAITools(req.Tools)
 
 		accessToken, accountID, err := cfg.AuthProvider(r.Context())
@@ -88,7 +95,7 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 		}
 
 		payload := backendResponsesPayload{
-			Model:        gptb2o.NormalizeModelID(req.Model),
+			Model:        normalizedModel,
 			Input:        inputItems,
 			Instructions: instructions,
 			Tools:        tools,
@@ -191,6 +198,21 @@ func mergeInstructions(a, b string) string {
 		return a
 	}
 	return a + "\n\n" + b
+}
+
+const defaultCodexInstructions = "You are a helpful assistant."
+
+func normalizeUndefinedString(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return ""
+	}
+	switch strings.ToLower(trimmed) {
+	case "[undefined]", "undefined", "[null]", "null":
+		return ""
+	default:
+		return trimmed
+	}
 }
 
 func parseResponsesInput(raw json.RawMessage) ([]backendInputItem, string, error) {

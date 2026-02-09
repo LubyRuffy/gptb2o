@@ -9,6 +9,7 @@ import (
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/auth"
 	"github.com/LubyRuffy/gptb2o/backend"
+
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
@@ -17,11 +18,12 @@ const defaultAgentName = "gptb2o-adk"
 
 func main() {
 	var (
-		model      = flag.String("model", gptb2o.ModelNamespace+"gpt-5.1", "model id (supports legacy opencode/codex/*)")
-		input      = flag.String("input", "你好，介绍一下你自己", "user input")
-		backendURL = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
-		authSource = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
-		originator = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		model        = flag.String("model", gptb2o.ModelNamespace+"gpt-5.3-codex", "model id (supports legacy opencode/codex/*)")
+		input        = flag.String("input", "你好，介绍一下你自己", "user input")
+		backendURL   = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
+		authSource   = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
+		originator   = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		instructions = flag.String("instructions", backend.DefaultInstructions, "system instructions for the model")
 	)
 	flag.Parse()
 
@@ -36,19 +38,21 @@ func main() {
 	}
 
 	m, err := backend.NewChatModel(backend.ChatModelConfig{
-		Model:       gptb2o.NormalizeModelID(*model),
-		BackendURL:  firstNonEmpty(*backendURL, gptb2o.DefaultBackendURL),
-		AccessToken: accessToken,
-		AccountID:   accountID,
-		Originator:  firstNonEmpty(*originator, gptb2o.DefaultOriginator),
+		Model:        gptb2o.NormalizeModelID(*model),
+		BackendURL:   firstNonEmpty(*backendURL, gptb2o.DefaultBackendURL),
+		AccessToken:  accessToken,
+		AccountID:    accountID,
+		Originator:   firstNonEmpty(*originator, gptb2o.DefaultOriginator),
+		Instructions: *instructions,
 	})
 	if err != nil {
 		log.Fatalf("create model failed: %v", err)
 	}
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Name:  defaultAgentName,
-		Model: m,
+		Name:        defaultAgentName,
+		Description: "A chat model agent that uses the gptb2o model to generate responses.",
+		Model:       m,
 	})
 	if err != nil {
 		log.Fatalf("create agent failed: %v", err)

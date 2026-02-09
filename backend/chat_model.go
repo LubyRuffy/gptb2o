@@ -17,6 +17,9 @@ import (
 
 var errStreamDone = errors.New("backend stream done")
 
+// DefaultInstructions 是当用户未指定 instructions 时使用的默认系统指令。
+const DefaultInstructions = "You are a helpful assistant."
+
 type ChatModelConfig struct {
 	Model        string
 	BackendURL   string
@@ -163,7 +166,7 @@ type requestItem struct {
 type requestPayload struct {
 	Model        string           `json:"model"`
 	Input        []requestItem    `json:"input"`
-	Instructions string           `json:"instructions,omitempty"`
+	Instructions string           `json:"instructions"`
 	Tools        []ToolDefinition `json:"tools,omitempty"`
 	Store        bool             `json:"store"`
 	Stream       bool             `json:"stream"`
@@ -236,6 +239,11 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no valid messages to send")
+	}
+
+	// 后端 API 要求 instructions 不能为空，若未指定则使用默认值
+	if instructions == "" {
+		instructions = DefaultInstructions
 	}
 
 	tools := make([]ToolDefinition, 0, len(m.nativeTools)+len(m.functionTools))

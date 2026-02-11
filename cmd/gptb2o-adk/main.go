@@ -18,7 +18,7 @@ const defaultAgentName = "gptb2o-adk"
 
 func main() {
 	var (
-		model        = flag.String("model", gptb2o.ModelNamespace+"gpt-5.3-codex", "model id (supports legacy opencode/codex/*)")
+		model        = flag.String("model", gptb2o.DefaultModelFullID, "model id (supports legacy opencode/codex/*)")
 		input        = flag.String("input", "你好，介绍一下你自己", "user input")
 		backendURL   = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
 		authSource   = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")

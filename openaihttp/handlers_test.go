@@ -33,6 +33,7 @@ func TestModels_OK(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Equal(t, "list", resp.Object)
 	require.Len(t, resp.Data, len(gptb2o.PresetModels()))
+	require.Equal(t, gptb2o.DefaultModelFullID, resp.Data[0].ID)
 
 	ids := make(map[string]struct{}, len(resp.Data))
 	for _, m := range resp.Data {

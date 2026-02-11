@@ -36,13 +36,13 @@ curl http://127.0.0.1:8080/v1/models
 
 curl http://127.0.0.1:8080/v1/responses \\
   -H 'Content-Type: application/json' \\
-  -d '{"model":"chatgpt/codex/gpt-5.1","input":"hi","stream":false}'
+  -d '{"model":"chatgpt/codex/gpt-5.3-codex","input":"hi","stream":false}'
 ```
 
 ### 2) 最小 ADK demo（SDK 验证）
 
 ```bash
-go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.1 --input "你好"
+go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex --input "你好"
 ```
 
 ## OpenAI 兼容端点
@@ -56,6 +56,39 @@ go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.1 --inpu
   - 入参兼容 Claude Messages API 的 `model/messages/system/stream/max_tokens`
   - `stream=true`：返回 Claude 风格 SSE（`message_start/content_block_delta/.../message_stop`）
   - `stream=false`：返回 Claude 风格 `message` JSON
+
+## Claude Code 配置与使用说明
+
+### 1) 启动本地服务
+
+```bash
+go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-path /v1
+```
+
+### 2) Claude CLI 启动方式（推荐）
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:12345 claude --model chatgpt/codex/gpt-5.3-codex
+```
+
+说明：
+- 上面这条命令会请求 `POST /v1/messages`，因此服务端建议保持 `--base-path /v1`。
+- 如果你的 Claude CLI 环境还要求 API Key，可额外设置任意非空值（例如 `ANTHROPIC_API_KEY=local-dev`）。
+
+### 3) 最小请求验证（等价于 Claude Code 发出的 Messages 调用）
+
+```bash
+curl http://127.0.0.1:12345/v1/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"gpt-5.3-codex",
+    "max_tokens":1024,
+    "stream":false,
+    "messages":[{"role":"user","content":"请用一句话介绍 gptb2o"}]
+  }'
+```
+
+如果返回 `type=message` 且 `content[0].text` 有内容，说明 Claude Code 侧可按相同参数工作。
 
 ## License
 

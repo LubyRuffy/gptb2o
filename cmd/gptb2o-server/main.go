@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/auth"
 	"github.com/LubyRuffy/gptb2o/openaihttp"
 	"github.com/gin-gonic/gin"
@@ -57,7 +58,7 @@ func main() {
 	exampleAddr := addrForLocalClient(*listen)
 	log.Printf("gptb2o server listening on http://%s%s", exampleAddr, *basePath)
 	log.Printf("try: curl http://%s%s/models", exampleAddr, *basePath)
-	log.Printf("try: curl http://%s%s/responses -H 'Content-Type: application/json' -d '{\"model\":\"chatgpt/codex/gpt-5.1\",\"input\":\"hi\",\"stream\":false}'", exampleAddr, *basePath)
+	log.Printf("try: curl http://%s%s/responses -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"hi\",\"stream\":false}'", exampleAddr, *basePath, gptb2o.DefaultModelFullID)
 	log.Printf("OpenAI SDK base_url: http://%s%s", exampleAddr, *basePath)
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

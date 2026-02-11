@@ -18,12 +18,13 @@ const defaultAgentName = "gptb2o-adk"
 
 func main() {
 	var (
-		model        = flag.String("model", gptb2o.DefaultModelFullID, "model id (supports legacy opencode/codex/*)")
-		input        = flag.String("input", "你好，介绍一下你自己", "user input")
-		backendURL   = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
-		authSource   = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
-		originator   = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
-		instructions = flag.String("instructions", backend.DefaultInstructions, "system instructions for the model")
+		model           = flag.String("model", gptb2o.DefaultModelFullID, "model id (supports legacy opencode/codex/*)")
+		input           = flag.String("input", "你好，介绍一下你自己", "user input")
+		backendURL      = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
+		authSource      = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
+		originator      = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		instructions    = flag.String("instructions", backend.DefaultInstructions, "system instructions for the model")
+		reasoningEffort = flag.String("reasoning-effort", "", "reasoning effort forwarded to backend (e.g. low|medium|high)")
 	)
 	flag.Parse()
 
@@ -38,12 +39,13 @@ func main() {
 	}
 
 	m, err := backend.NewChatModel(backend.ChatModelConfig{
-		Model:        gptb2o.NormalizeModelID(*model),
-		BackendURL:   firstNonEmpty(*backendURL, gptb2o.DefaultBackendURL),
-		AccessToken:  accessToken,
-		AccountID:    accountID,
-		Originator:   firstNonEmpty(*originator, gptb2o.DefaultOriginator),
-		Instructions: *instructions,
+		Model:           gptb2o.NormalizeModelID(*model),
+		BackendURL:      firstNonEmpty(*backendURL, gptb2o.DefaultBackendURL),
+		AccessToken:     accessToken,
+		AccountID:       accountID,
+		Originator:      firstNonEmpty(*originator, gptb2o.DefaultOriginator),
+		Instructions:    *instructions,
+		ReasoningEffort: *reasoningEffort,
 	})
 	if err != nil {
 		log.Fatalf("create model failed: %v", err)

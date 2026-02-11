@@ -302,3 +302,81 @@ func TestResponses_NonCodexModel_DefaultInstructions_WhenEmpty(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 }
+
+func TestResponses_ReasoningEffort_FromRequest(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.Equal(t, "high", payload.Reasoning.Effort)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reasoning_1\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":"hi",
+  "stream":false,
+  "reasoning":{"effort":"high"}
+}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestResponses_ReasoningEffort_FromConfigDefault(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.Equal(t, "medium", payload.Reasoning.Effort)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reasoning_2\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:      backend.URL,
+		HTTPClient:      backend.Client(),
+		ReasoningEffort: "medium",
+		AuthProvider:    func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}

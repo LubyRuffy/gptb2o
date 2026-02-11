@@ -10,6 +10,8 @@ const (
 
 	// ModelNamespace 是对外暴露的主命名空间。
 	ModelNamespace = "chatgpt/codex/"
+	// LegacyModelNamespace 用于兼容旧的命名空间输入（历史原因）。
+	LegacyModelNamespace = "opencode/codex/"
 
 	// DefaultModelID 是对外默认推荐/选中的模型 ID（不带命名空间）。
 	DefaultModelID = "gpt-5.3-codex"

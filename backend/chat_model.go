@@ -30,6 +30,8 @@ type ChatModelConfig struct {
 	Temperature  *float32
 	TopP         *float32
 	Instructions string
+	// ReasoningEffort 会透传到 backend `reasoning.effort`（如 low/medium/high）。
+	ReasoningEffort string
 }
 
 // ChatModel 是基于 ChatGPT Backend responses SSE 接口的 ToolCallingChatModel 实现。
@@ -164,14 +166,19 @@ type requestItem struct {
 }
 
 type requestPayload struct {
-	Model        string           `json:"model"`
-	Input        []requestItem    `json:"input"`
-	Instructions string           `json:"instructions"`
-	Tools        []ToolDefinition `json:"tools,omitempty"`
-	Store        bool             `json:"store"`
-	Stream       bool             `json:"stream"`
-	Temperature  *float32         `json:"temperature,omitempty"`
-	TopP         *float32         `json:"top_p,omitempty"`
+	Model        string            `json:"model"`
+	Input        []requestItem     `json:"input"`
+	Instructions string            `json:"instructions"`
+	Reasoning    *requestReasoning `json:"reasoning,omitempty"`
+	Tools        []ToolDefinition  `json:"tools,omitempty"`
+	Store        bool              `json:"store"`
+	Stream       bool              `json:"stream"`
+	Temperature  *float32          `json:"temperature,omitempty"`
+	TopP         *float32          `json:"top_p,omitempty"`
+}
+
+type requestReasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayload, error) {
@@ -259,16 +266,33 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 		tools = append(tools, m.functionTools...)
 	}
 
+	effort := normalizeReasoningEffort(m.config.ReasoningEffort)
+	var reasoning *requestReasoning
+	if effort != "" {
+		reasoning = &requestReasoning{Effort: effort}
+	}
+
 	return &requestPayload{
 		Model:        m.config.Model,
 		Input:        items,
 		Instructions: instructions,
+		Reasoning:    reasoning,
 		Tools:        tools,
 		Store:        false,
 		Stream:       true,
 		Temperature:  m.config.Temperature,
 		TopP:         m.config.TopP,
 	}, nil
+}
+
+func normalizeReasoningEffort(s string) string {
+	trimmed := strings.TrimSpace(s)
+	switch strings.ToLower(trimmed) {
+	case "", "undefined", "[undefined]", "null", "[null]":
+		return ""
+	default:
+		return trimmed
+	}
 }
 
 func resolveMessageContent(msg *schema.Message) string {

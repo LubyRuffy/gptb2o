@@ -37,6 +37,12 @@ func newTestChatModel(instructions string) *ChatModel {
 	}
 }
 
+func newTestChatModelWithReasoning(instructions string, effort string) *ChatModel {
+	m := newTestChatModel(instructions)
+	m.config.ReasoningEffort = effort
+	return m
+}
+
 func TestBuildRequestPayload_DefaultInstructions(t *testing.T) {
 	// 不设置 Instructions，应使用 DefaultInstructions
 	m := newTestChatModel("")
@@ -107,6 +113,31 @@ func TestBuildRequestPayload_InstructionsAlwaysSerialized(t *testing.T) {
 	_, exists := raw["instructions"]
 	require.True(t, exists, "instructions 字段必须始终存在于 JSON 请求体中")
 	require.NotEmpty(t, raw["instructions"], "instructions 不能为空字符串")
+}
+
+func TestBuildRequestPayload_ReasoningEffortSerialized(t *testing.T) {
+	m := newTestChatModelWithReasoning("", "high")
+	input := []*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	}
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.NotNil(t, payload.Reasoning)
+	require.Equal(t, "high", payload.Reasoning.Effort)
+
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"reasoning":{"effort":"high"}`)
+}
+
+func TestBuildRequestPayload_ReasoningEffortUndefinedIgnored(t *testing.T) {
+	m := newTestChatModelWithReasoning("", "[undefined]")
+	input := []*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	}
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.Nil(t, payload.Reasoning)
 }
 
 func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {

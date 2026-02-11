@@ -19,11 +19,12 @@ import (
 
 func main() {
 	var (
-		listen     = flag.String("listen", "127.0.0.1:8080", "listen address")
-		basePath   = flag.String("base-path", "/v1", "base path prefix")
-		backendURL = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
-		authSource = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
-		originator = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		listen          = flag.String("listen", "127.0.0.1:8080", "listen address")
+		basePath        = flag.String("base-path", "/v1", "base path prefix")
+		backendURL      = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
+		authSource      = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
+		originator      = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		reasoningEffort = flag.String("reasoning-effort", "", "default reasoning effort forwarded to backend (e.g. low|medium|high)")
 	)
 	flag.Parse()
 
@@ -36,9 +37,10 @@ func main() {
 	r.Use(gin.Logger(), gin.Recovery())
 
 	err = openaihttp.RegisterGinRoutes(r, openaihttp.Config{
-		BasePath:   *basePath,
-		BackendURL: *backendURL,
-		Originator: *originator,
+		BasePath:        *basePath,
+		BackendURL:      *backendURL,
+		Originator:      *originator,
+		ReasoningEffort: *reasoningEffort,
 		AuthProvider: func(ctx context.Context) (string, string, error) {
 			return provider.Auth(ctx)
 		},

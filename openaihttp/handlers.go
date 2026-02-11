@@ -68,12 +68,13 @@ func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, mode
 		}
 
 		m, err := backend.NewChatModel(backend.ChatModelConfig{
-			Model:       modelID,
-			BackendURL:  resolved.BackendURL,
-			AccessToken: accessToken,
-			AccountID:   accountID,
-			HTTPClient:  resolved.HTTPClient,
-			Originator:  resolved.Originator,
+			Model:           modelID,
+			BackendURL:      resolved.BackendURL,
+			AccessToken:     accessToken,
+			AccountID:       accountID,
+			HTTPClient:      resolved.HTTPClient,
+			Originator:      resolved.Originator,
+			ReasoningEffort: resolved.ReasoningEffort,
 		})
 		if err != nil {
 			return nil, &httpError{
@@ -104,6 +105,7 @@ type resolvedConfig struct {
 	HTTPClient        *http.Client
 	AuthProvider      AuthProvider
 	Originator        string
+	ReasoningEffort   string
 	SystemFingerprint string
 }
 
@@ -126,6 +128,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 	if originator == "" {
 		originator = gptb2o.DefaultOriginator
 	}
+	reasoningEffort := normalizeReasoningEffort(cfg.ReasoningEffort)
 
 	fp := strings.TrimSpace(cfg.SystemFingerprint)
 	if fp == "" {
@@ -138,6 +141,7 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		HTTPClient:        client,
 		AuthProvider:      cfg.AuthProvider,
 		Originator:        originator,
+		ReasoningEffort:   reasoningEffort,
 		SystemFingerprint: fp,
 	}, nil
 }

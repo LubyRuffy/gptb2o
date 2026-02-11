@@ -27,6 +27,11 @@ type responsesRequest struct {
 	Stream       bool                   `json:"stream"`
 	Tools        []openaiapi.OpenAITool `json:"tools,omitempty"`
 	Instructions string                 `json:"instructions,omitempty"`
+	Reasoning    responsesReasoning     `json:"reasoning,omitempty"`
+}
+
+type responsesReasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type responseInputMessage struct {
@@ -44,6 +49,7 @@ type backendResponsesPayload struct {
 	Model        string                   `json:"model"`
 	Input        []backendInputItem       `json:"input"`
 	Instructions string                   `json:"instructions,omitempty"`
+	Reasoning    *responsesReasoning      `json:"reasoning,omitempty"`
 	Tools        []backend.ToolDefinition `json:"tools,omitempty"`
 	Store        bool                     `json:"store"`
 	Stream       bool                     `json:"stream"`
@@ -86,6 +92,10 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 			// 同时部分客户端会把未定义字段序列化为 "[undefined]"，这里统一清洗并补默认值。
 			instructions = defaultCodexInstructions
 		}
+		effort := normalizeReasoningEffort(req.Reasoning.Effort)
+		if effort == "" {
+			effort = cfg.ReasoningEffort
+		}
 		tools := backend.ToolsFromOpenAITools(req.Tools)
 
 		accessToken, accountID, err := cfg.AuthProvider(r.Context())
@@ -98,6 +108,7 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 			Model:        normalizedModel,
 			Input:        inputItems,
 			Instructions: instructions,
+			Reasoning:    reasoningOrNil(effort),
 			Tools:        tools,
 			Store:        false,
 			Stream:       true,
@@ -213,6 +224,18 @@ func normalizeUndefinedString(s string) string {
 	default:
 		return trimmed
 	}
+}
+
+func normalizeReasoningEffort(s string) string {
+	return normalizeUndefinedString(s)
+}
+
+func reasoningOrNil(effort string) *responsesReasoning {
+	effort = normalizeReasoningEffort(effort)
+	if effort == "" {
+		return nil
+	}
+	return &responsesReasoning{Effort: effort}
 }
 
 func parseResponsesInput(raw json.RawMessage) ([]backendInputItem, string, error) {

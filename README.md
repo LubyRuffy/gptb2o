@@ -37,12 +37,18 @@ curl http://127.0.0.1:8080/v1/models
 curl http://127.0.0.1:8080/v1/responses \\
   -H 'Content-Type: application/json' \\
   -d '{"model":"chatgpt/codex/gpt-5.3-codex","input":"hi","stream":false}'
+
+# 指定默认 reasoning effort（会透传到 backend 的 reasoning.effort）
+go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort medium
 ```
 
 ### 2) 最小 ADK demo（SDK 验证）
 
 ```bash
 go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex --input "你好"
+
+# ADK demo 也支持指定 reasoning effort
+go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex --reasoning-effort high --input "你好"
 ```
 
 ## OpenAI 兼容端点
@@ -52,6 +58,7 @@ go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex 
 - `POST /v1/responses`（官方推荐）
   - `stream=true`：输出官方 SSE（`event:` + `data:`），并且不透传 backend 的 `data: [DONE]`
   - `stream=false`：从 backend SSE 的 `response.completed.response` 提取最终 JSON 返回
+  - 支持 `reasoning.effort` 透传（请求级）；若未传可用服务启动参数 `--reasoning-effort` 作为默认值
 - `POST /v1/messages`（Claude Code / Anthropic 官方路径）
   - 入参兼容 Claude Messages API 的 `model/messages/system/stream/max_tokens`
   - `stream=true`：返回 Claude 风格 SSE（`message_start/content_block_delta/.../message_stop`）
@@ -63,6 +70,9 @@ go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex 
 
 ```bash
 go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-path /v1
+
+# 如果需要固定推理强度（不依赖 Claude 客户端的 effort 档位）
+go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-path /v1 --reasoning-effort medium
 ```
 
 ### 2) Claude CLI 启动方式（推荐）
@@ -74,6 +84,7 @@ ANTHROPIC_BASE_URL=http://localhost:12345 claude --model chatgpt/codex/gpt-5.3-c
 说明：
 - 上面这条命令会请求 `POST /v1/messages`，因此服务端建议保持 `--base-path /v1`。
 - 如果你的 Claude CLI 环境还要求 API Key，可额外设置任意非空值（例如 `ANTHROPIC_API_KEY=local-dev`）。
+- Claude `/model` 菜单里的 `Effort not supported` 是客户端提示；可通过服务端 `--reasoning-effort` 指定默认推理强度。
 
 ### 3) 最小请求验证（等价于 Claude Code 发出的 Messages 调用）
 

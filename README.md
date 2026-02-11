@@ -79,12 +79,15 @@ go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-p
 ### 2) Claude CLI 启动方式（推荐）
 
 ```bash
-ANTHROPIC_BASE_URL=http://localhost:12345 claude --model chatgpt/codex/gpt-5.3-codex
+ANTHROPIC_BASE_URL=http://localhost:12345 \
+ANTHROPIC_API_KEY=local-dev \
+claude --setting-sources project,local --model chatgpt/codex/gpt-5.3-codex
 ```
 
 说明：
 - 上面这条命令会请求 `POST /v1/messages`，因此服务端建议保持 `--base-path /v1`。
-- 如果你的 Claude CLI 环境还要求 API Key，可额外设置任意非空值（例如 `ANTHROPIC_API_KEY=local-dev`）。
+- `--setting-sources project,local` + 非空 `ANTHROPIC_API_KEY` 可强制 Claude CLI 走 API Key 配置源。
+- 若不加上述参数，Claude CLI 可能优先走 OAuth 通道，导致不会命中你配置的 `ANTHROPIC_BASE_URL`。
 - Claude `/model` 菜单里的 `Effort not supported` 是客户端提示；可通过服务端 `--reasoning-effort` 指定默认推理强度。
 
 ### 3) 最小请求验证（等价于 Claude Code 发出的 Messages 调用）
@@ -101,6 +104,19 @@ curl http://127.0.0.1:12345/v1/messages \
 ```
 
 如果返回 `type=message` 且 `content[0].text` 有内容，说明 Claude Code 侧可按相同参数工作。
+
+### 4) Claude teammate 集成测试（默认跳过）
+
+该用例会启动：
+- fake backend（模拟 `Task` tool_use + tool_result 往返）
+- gptb2o 本地服务（`/v1/messages`）
+- Claude CLI（真实命令行）
+
+并验证不会出现 `Invalid tool parameters`。
+
+```bash
+GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
+```
 
 ## License
 

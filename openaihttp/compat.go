@@ -357,6 +357,7 @@ func toolCallArgumentsForStream(call *backend.ToolCall, lastArgs map[string]stri
 		}
 		args = "{}"
 	}
+	args = normalizeJSONArgumentString(args)
 	if requiresJSONObjectToolArguments(toolName) {
 		var input map[string]any
 		if err := json.Unmarshal([]byte(args), &input); err != nil || len(input) == 0 {
@@ -374,6 +375,22 @@ func toolCallArgumentsForStream(call *backend.ToolCall, lastArgs map[string]stri
 	}
 	lastArgs[callID] = args
 	return args, true
+}
+
+func normalizeJSONArgumentString(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return trimmed
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return trimmed
+	}
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return trimmed
+	}
+	return string(normalized)
 }
 
 func requiresNonEmptyToolArguments(name string) bool {

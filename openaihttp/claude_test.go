@@ -469,6 +469,25 @@ func TestClaudeMessages_Stream_ToolUse(t *testing.T) {
 	require.Contains(t, out, "\"type\":\"tool_use\"")
 	require.Contains(t, out, "\"name\":\"Edit\"")
 	require.Contains(t, out, "\"stop_reason\":\"tool_use\"")
+	events := parseClaudeSSEEvents(t, out)
+	foundToolStartWithInput := false
+	for _, ev := range events {
+		if ev.Name != "content_block_start" {
+			continue
+		}
+		cb, ok := ev.Data["content_block"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(stringValue(cb["type"])) != "tool_use" {
+			continue
+		}
+		if _, ok := cb["input"].(map[string]any); ok {
+			foundToolStartWithInput = true
+			break
+		}
+	}
+	require.True(t, foundToolStartWithInput, "tool_use content_block_start 必须包含 input 对象")
 }
 
 func TestClaudeMessages_Stream_TaskToolUse_ProtocolInputJSONDelta(t *testing.T) {

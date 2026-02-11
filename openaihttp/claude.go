@@ -376,16 +376,15 @@ func (h *claudeCompatHandler) writeMessagesStream(
 					continue
 				}
 				closeTextBlock()
-				toolStart := claudeContentBlock{
-					Type:  "tool_use",
-					ID:    callID,
-					Name:  name,
-					Input: map[string]any{},
-				}
 				writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
-					"type":          "content_block_start",
-					"index":         blockIndex,
-					"content_block": toolStart,
+					"type":  "content_block_start",
+					"index": blockIndex,
+					"content_block": map[string]any{
+						"type":  "tool_use",
+						"id":    callID,
+						"name":  name,
+						"input": map[string]any{},
+					},
 				})
 				writeClaudeSSEEvent(w, flusher, "content_block_delta", map[string]any{
 					"type":  "content_block_delta",

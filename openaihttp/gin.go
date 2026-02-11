@@ -24,5 +24,10 @@ func RegisterGinRoutes(r gin.IRouter, cfg Config) error {
 		return err
 	}
 	r.POST(joinPath(basePath, "/messages"), gin.WrapF(claudeHandler))
+	claudeCountTokensHandler, err := ClaudeCountTokensHandler(cfg)
+	if err != nil {
+		return err
+	}
+	r.POST(joinPath(basePath, "/messages/count_tokens"), gin.WrapF(claudeCountTokensHandler))
 	return nil
 }

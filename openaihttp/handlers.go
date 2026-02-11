@@ -56,6 +56,23 @@ func ClaudeMessagesHandler(cfg Config) (http.HandlerFunc, error) {
 	return h.handleMessages, nil
 }
 
+func ClaudeCountTokensHandler(cfg Config) (http.HandlerFunc, error) {
+	resolved, err := resolveConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now:          time.Now,
+		NewChatModel: newChatModelFactory(resolved),
+		WriteJSON:    writeJSON,
+		WriteError:   writeClaudeError,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return h.handleCountTokens, nil
+}
+
 func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
 	return func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
 		accessToken, accountID, err := resolved.AuthProvider(ctx)

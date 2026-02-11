@@ -342,18 +342,66 @@ func toolCallArgumentsForStream(call *backend.ToolCall, lastArgs map[string]stri
 	if callID == "" {
 		return "", false
 	}
+	toolName := strings.TrimSpace(call.Name)
+	callStatus := strings.TrimSpace(call.Status)
+	if requiresCompletedToolCall(toolName) && !strings.EqualFold(callStatus, "completed") {
+		return "", false
+	}
 	args := strings.TrimSpace(call.Arguments)
+	if requiresNonEmptyToolArguments(toolName) && (args == "" || args == "{}") {
+		return "", false
+	}
 	if args == "" {
 		if call.Status != "" && call.Status != "completed" {
 			return "", false
 		}
 		args = "{}"
 	}
+	if requiresJSONObjectToolArguments(toolName) {
+		var input map[string]any
+		if err := json.Unmarshal([]byte(args), &input); err != nil || len(input) == 0 {
+			return "", false
+		}
+		if requiresTaskCoreFields(toolName) &&
+			(!hasNonEmptyStringField(input, "description") ||
+				!hasNonEmptyStringField(input, "prompt") ||
+				!hasNonEmptyStringField(input, "subagent_type")) {
+			return "", false
+		}
+	}
 	if prev, ok := lastArgs[callID]; ok && prev == args {
 		return "", false
 	}
 	lastArgs[callID] = args
 	return args, true
+}
+
+func requiresNonEmptyToolArguments(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "Task")
+}
+
+func requiresCompletedToolCall(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "Task")
+}
+
+func requiresJSONObjectToolArguments(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "Task")
+}
+
+func requiresTaskCoreFields(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "Task")
+}
+
+func hasNonEmptyStringField(input map[string]any, key string) bool {
+	v, ok := input[key]
+	if !ok {
+		return false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(s) != ""
 }
 
 func convertOpenAIChatMessages(messages []openaiapi.OpenAIMessage) ([]*schema.Message, error) {

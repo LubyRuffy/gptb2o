@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +88,10 @@ type claudeUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+type claudeCountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}
+
 func newClaudeCompatHandler(cfg claudeCompatConfig) (*claudeCompatHandler, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -127,13 +133,13 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, "messages is required")
 		return
 	}
+	debugClaudeTaskToolSchema(req.Tools)
 
-	modelID := normalizeClaudeModel(req.Model)
-	if !gptb2o.IsSupportedModelID(modelID) {
-		h.writeError(w, http.StatusBadRequest, "unsupported model")
+	modelID, err := resolveClaudeModelID(req.Model)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	modelID = gptb2o.NormalizeModelID(modelID)
 
 	tools, err := convertClaudeTools(req.Tools)
 	if err != nil {
@@ -233,6 +239,46 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	h.writeJSON(w, resp)
 }
 
+func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req claudeMessagesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		h.writeError(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	if len(req.Messages) == 0 {
+		h.writeError(w, http.StatusBadRequest, "messages is required")
+		return
+	}
+	if _, err := resolveClaudeModelID(req.Model); err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	tools, err := convertClaudeTools(req.Tools)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	chatInput, err := convertClaudeMessages(req.System, req.Messages)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	h.writeJSON(w, claudeCountTokensResponse{
+		InputTokens: estimateClaudeInputTokens(chatInput, tools),
+	})
+}
+
 func (h *claudeCompatHandler) writeMessagesStream(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -276,6 +322,7 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	textBlockIndex := 0
 	lastToolArgs := make(map[string]string)
 	hasToolUse := false
+	emittedContentBlock := false
 
 	closeTextBlock := func() {
 		if !textBlockOpen {
@@ -302,6 +349,7 @@ func (h *claudeCompatHandler) writeMessagesStream(
 			},
 		})
 		textBlockOpen = true
+		emittedContentBlock = true
 	}
 	emitText := func(delta string) {
 		if strings.TrimSpace(delta) == "" {
@@ -323,15 +371,29 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		for {
 			select {
 			case call := <-toolCallChan:
-				block, ok := claudeToolUseBlockFromCall(call, lastToolArgs)
+				callID, name, args, ok := claudeToolUseStreamPayloadFromCall(call, lastToolArgs)
 				if !ok {
 					continue
 				}
 				closeTextBlock()
+				toolStart := claudeContentBlock{
+					Type:  "tool_use",
+					ID:    callID,
+					Name:  name,
+					Input: map[string]any{},
+				}
 				writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
 					"type":          "content_block_start",
 					"index":         blockIndex,
-					"content_block": block,
+					"content_block": toolStart,
+				})
+				writeClaudeSSEEvent(w, flusher, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": blockIndex,
+					"delta": map[string]any{
+						"type":         "input_json_delta",
+						"partial_json": args,
+					},
 				})
 				writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
 					"type":  "content_block_stop",
@@ -339,6 +401,7 @@ func (h *claudeCompatHandler) writeMessagesStream(
 				})
 				blockIndex++
 				hasToolUse = true
+				emittedContentBlock = true
 			default:
 				return
 			}
@@ -359,6 +422,20 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	}
 
 	closeTextBlock()
+	if !emittedContentBlock {
+		writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": blockIndex,
+			"content_block": map[string]any{
+				"type": "text",
+				"text": "",
+			},
+		})
+		writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": blockIndex,
+		})
+	}
 	stopReason := "end_turn"
 	if hasToolUse {
 		stopReason = "tool_use"
@@ -372,6 +449,39 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		"usage": claudeUsage{},
 	})
 	writeClaudeSSEEvent(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
+}
+
+func estimateClaudeInputTokens(input []*schema.Message, tools []openaiapi.OpenAITool) int {
+	totalChars := 0
+	for _, msg := range input {
+		if msg == nil {
+			continue
+		}
+		totalChars += len(msg.Content)
+		totalChars += len(msg.ToolCallID)
+		totalChars += len(string(msg.Role))
+		for _, tc := range msg.ToolCalls {
+			totalChars += len(tc.ID)
+			totalChars += len(tc.Function.Name)
+			totalChars += len(tc.Function.Arguments)
+		}
+	}
+	for _, tool := range tools {
+		totalChars += len(tool.Type)
+		totalChars += len(tool.Function.Name)
+		totalChars += len(tool.Function.Description)
+		if paramsBytes, err := json.Marshal(tool.Function.Parameters); err == nil {
+			totalChars += len(paramsBytes)
+		}
+	}
+	tokens := totalChars / 4
+	if totalChars%4 != 0 {
+		tokens++
+	}
+	if tokens <= 0 {
+		tokens = 1
+	}
+	return tokens
 }
 
 func writeClaudeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload any) {
@@ -636,6 +746,7 @@ func claudeToolUseBlockFromCall(call *backend.ToolCall, lastArgs map[string]stri
 	if !ok {
 		return claudeContentBlock{}, false
 	}
+	debugClaudeTaskToolCall(name, callID, args, call.Status)
 	input := map[string]any{}
 	if strings.TrimSpace(args) != "" {
 		var decoded any
@@ -657,12 +768,81 @@ func claudeToolUseBlockFromCall(call *backend.ToolCall, lastArgs map[string]stri
 	}, true
 }
 
+func claudeToolUseStreamPayloadFromCall(call *backend.ToolCall, lastArgs map[string]string) (string, string, string, bool) {
+	if call == nil {
+		return "", "", "", false
+	}
+	name := strings.TrimSpace(call.Name)
+	callID := strings.TrimSpace(call.ID)
+	if name == "" || callID == "" {
+		return "", "", "", false
+	}
+	args, ok := toolCallArgumentsForStream(call, lastArgs)
+	if !ok {
+		return "", "", "", false
+	}
+	debugClaudeTaskToolCall(name, callID, args, call.Status)
+	return callID, name, args, true
+}
+
+func debugClaudeTaskToolSchema(tools []claudeTool) {
+	if os.Getenv("GPTB2O_DEBUG_CLAUDE_TOOLS") != "1" {
+		return
+	}
+	for _, t := range tools {
+		name := strings.TrimSpace(t.Name)
+		if !strings.EqualFold(name, "Task") {
+			continue
+		}
+		required := ""
+		if reqRaw, ok := t.InputSchema["required"]; ok {
+			if b, err := json.Marshal(reqRaw); err == nil {
+				required = string(b)
+			}
+		}
+		propsCount := 0
+		if propsRaw, ok := t.InputSchema["properties"].(map[string]any); ok {
+			propsCount = len(propsRaw)
+		}
+		log.Printf("[gptb2o][claude-tools] task schema: props=%d required=%s", propsCount, required)
+	}
+}
+
+func debugClaudeTaskToolCall(name string, callID string, args string, status string) {
+	if os.Getenv("GPTB2O_DEBUG_CLAUDE_TOOLS") != "1" {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(name), "Task") {
+		return
+	}
+	trimmed := strings.TrimSpace(args)
+	log.Printf("[gptb2o][claude-tools] task call: id=%s status=%s args=%q", strings.TrimSpace(callID), strings.TrimSpace(status), trimmed)
+}
+
 func normalizeClaudeModel(model string) string {
 	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "claude-haiku") {
+		return gptb2o.ModelNamespace + "gpt-5.1-codex-mini"
+	}
+	if strings.HasPrefix(lower, "claude-") {
+		return gptb2o.DefaultModelFullID
+	}
 	if strings.HasPrefix(trimmed, gptb2o.ModelNamespace) || strings.HasPrefix(trimmed, gptb2o.LegacyModelNamespace) {
 		return trimmed
 	}
 	return gptb2o.ModelNamespace + trimmed
+}
+
+func resolveClaudeModelID(model string) (string, error) {
+	candidate := normalizeClaudeModel(model)
+	if !gptb2o.IsSupportedModelID(candidate) {
+		return "", fmt.Errorf("unsupported model")
+	}
+	return gptb2o.NormalizeModelID(candidate), nil
 }
 
 func writeClaudeError(w http.ResponseWriter, statusCode int, message string) {

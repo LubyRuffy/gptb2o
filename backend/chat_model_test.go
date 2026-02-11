@@ -155,3 +155,68 @@ func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 	require.Equal(t, "native.web_search", calls[0].Name)
 	require.Equal(t, "in_progress", calls[0].Status)
 }
+
+func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.T) {
+	body := strings.NewReader("" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"Task\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"description\\\":\\\"desc\\\",\"}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"\\\"prompt\\\":\\\"do it\\\",\\\"subagent_type\\\":\\\"code-simplifier\\\"}\"}\n\n" +
+		"data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\"}\n\n" +
+		"data: [DONE]\n\n")
+
+	var calls []*ToolCall
+	_, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+		calls = append(calls, call)
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, calls)
+
+	var taskCall *ToolCall
+	for _, call := range calls {
+		if call == nil || call.ID != "call_1" || call.Name != "Task" {
+			continue
+		}
+		if strings.TrimSpace(call.Arguments) == "" {
+			continue
+		}
+		taskCall = call
+	}
+	require.NotNil(t, taskCall, "应回调携带完整 arguments 的 Task 调用")
+
+	var args map[string]any
+	require.NoError(t, json.Unmarshal([]byte(taskCall.Arguments), &args))
+	require.Equal(t, "desc", args["description"])
+	require.Equal(t, "do it", args["prompt"])
+	require.Equal(t, "code-simplifier", args["subagent_type"])
+}
+
+func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing.T) {
+	body := strings.NewReader("" +
+		"data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"Task\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"Task\",\"arguments\":\"{\\\"description\\\":\\\"desc\\\",\\\"prompt\\\":\\\"do it\\\",\\\"subagent_type\\\":\\\"code-simplifier\\\"}\",\"status\":\"completed\"}]}}\n\n" +
+		"data: [DONE]\n\n")
+
+	var calls []*ToolCall
+	_, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+		calls = append(calls, call)
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, calls)
+
+	var completed *ToolCall
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		if call.ID == "call_2" && call.Name == "Task" && strings.TrimSpace(call.Arguments) != "" {
+			completed = call
+		}
+	}
+	require.NotNil(t, completed, "response.completed 中的 function_call 应被解析")
+
+	var args map[string]any
+	require.NoError(t, json.Unmarshal([]byte(completed.Arguments), &args))
+	require.Equal(t, "desc", args["description"])
+	require.Equal(t, "do it", args["prompt"])
+	require.Equal(t, "code-simplifier", args["subagent_type"])
+}

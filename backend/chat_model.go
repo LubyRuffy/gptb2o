@@ -338,6 +338,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 	var dataLines []string
 	var fullContent strings.Builder
 	hasDelta := false
+	functionCalls := newFunctionCallState()
 
 	for {
 		if ctx.Err() != nil {
@@ -348,7 +349,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if len(dataLines) > 0 {
-					if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta); err != nil {
+					if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
 						if errors.Is(err, errStreamDone) {
 							return fullContent.String(), nil
 						}
@@ -365,7 +366,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 			if len(dataLines) == 0 {
 				continue
 			}
-			if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta); err != nil {
+			if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
 				if errors.Is(err, errStreamDone) {
 					return fullContent.String(), nil
 				}
@@ -387,15 +388,44 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 	}
 }
 
-func handleBackendEvent(payload string, fullContent *strings.Builder, onDelta func(string) error, onToolCall func(*ToolCall), hasDelta *bool) error {
+type functionCallState struct {
+	itemMeta map[string]functionCallMeta
+	args     map[string]string
+}
+
+type functionCallMeta struct {
+	CallID string
+	Name   string
+}
+
+func newFunctionCallState() *functionCallState {
+	return &functionCallState{
+		itemMeta: make(map[string]functionCallMeta),
+		args:     make(map[string]string),
+	}
+}
+
+func handleBackendEvent(
+	payload string,
+	fullContent *strings.Builder,
+	onDelta func(string) error,
+	onToolCall func(*ToolCall),
+	hasDelta *bool,
+	functionCalls *functionCallState,
+) error {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
 		return nil
 	}
 
 	eventType, _ := raw["type"].(string)
-	if toolCall := extractToolCall(eventType, raw); toolCall != nil && onToolCall != nil {
-		onToolCall(toolCall)
+	if onToolCall != nil {
+		for _, toolCall := range extractToolCalls(eventType, raw, functionCalls) {
+			if toolCall == nil {
+				continue
+			}
+			onToolCall(toolCall)
+		}
 	}
 
 	appendDelta := func(delta string) error {
@@ -558,22 +588,162 @@ func extractContentPartText(raw map[string]any) string {
 	return ""
 }
 
-func extractToolCall(eventType string, raw map[string]any) *ToolCall {
+func extractToolCalls(eventType string, raw map[string]any, functionCalls *functionCallState) []*ToolCall {
 	switch eventType {
 	case "response.output_item.added", "response.output_item.done":
 		item, ok := raw["item"].(map[string]any)
 		if !ok {
 			return nil
 		}
-		return toolCallFromItem(eventType, item)
+		return toolCallsFromItem(eventType, item, functionCalls)
+	case "response.completed":
+		return toolCallsFromResponseCompleted(raw, functionCalls)
+	case "response.function_call_arguments.delta":
+		applyFunctionCallArgumentsDelta(raw, functionCalls)
+		return nil
+	case "response.function_call_arguments.done":
+		call := toolCallFromFunctionCallArgumentsDone(raw, functionCalls)
+		if call == nil {
+			return nil
+		}
+		return []*ToolCall{call}
 	case "response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed":
 		itemID, _ := raw["item_id"].(string)
-		return toolCallFromItemID(eventType, itemID, "web_search_call")
+		call := toolCallFromItemID(eventType, itemID, "web_search_call")
+		if call == nil {
+			return nil
+		}
+		return []*ToolCall{call}
 	case "response.code_interpreter_call.in_progress", "response.code_interpreter_call.completed":
 		itemID, _ := raw["item_id"].(string)
-		return toolCallFromItemID(eventType, itemID, "code_interpreter_call")
+		call := toolCallFromItemID(eventType, itemID, "code_interpreter_call")
+		if call == nil {
+			return nil
+		}
+		return []*ToolCall{call}
 	default:
 		return nil
+	}
+}
+
+func toolCallsFromResponseCompleted(raw map[string]any, functionCalls *functionCallState) []*ToolCall {
+	resp, ok := raw["response"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	output, ok := resp["output"].([]any)
+	if !ok || len(output) == 0 {
+		return nil
+	}
+
+	out := make([]*ToolCall, 0, len(output))
+	for _, entry := range output {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		calls := toolCallsFromItem("response.output_item.done", item, functionCalls)
+		if len(calls) == 0 {
+			continue
+		}
+		out = append(out, calls...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toolCallsFromItem(eventType string, item map[string]any, functionCalls *functionCallState) []*ToolCall {
+	call := toolCallFromItem(eventType, item)
+	if call == nil {
+		return nil
+	}
+
+	itemType, _ := item["type"].(string)
+	if itemType == "function_call" && functionCalls != nil {
+		itemID, _ := item["id"].(string)
+		if itemID != "" {
+			meta := functionCallMeta{
+				CallID: strings.TrimSpace(call.ID),
+				Name:   strings.TrimSpace(call.Name),
+			}
+			if meta.CallID != "" && meta.Name != "" {
+				functionCalls.itemMeta[itemID] = meta
+			}
+
+			args := strings.TrimSpace(call.Arguments)
+			if args != "" {
+				functionCalls.args[itemID] = args
+			} else if cached := strings.TrimSpace(functionCalls.args[itemID]); cached != "" {
+				call.Arguments = cached
+			}
+		}
+	}
+
+	return []*ToolCall{call}
+}
+
+func applyFunctionCallArgumentsDelta(raw map[string]any, functionCalls *functionCallState) {
+	if functionCalls == nil {
+		return
+	}
+	itemID, _ := raw["item_id"].(string)
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return
+	}
+
+	delta := ""
+	if value, ok := raw["delta"].(string); ok {
+		delta = value
+	} else if value, ok := raw["arguments_delta"].(string); ok {
+		delta = value
+	}
+	if delta == "" {
+		return
+	}
+
+	functionCalls.args[itemID] += delta
+}
+
+func toolCallFromFunctionCallArgumentsDone(raw map[string]any, functionCalls *functionCallState) *ToolCall {
+	if functionCalls == nil {
+		return nil
+	}
+	itemID, _ := raw["item_id"].(string)
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return nil
+	}
+
+	arguments, _ := raw["arguments"].(string)
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		arguments = strings.TrimSpace(functionCalls.args[itemID])
+	}
+	if arguments != "" {
+		functionCalls.args[itemID] = arguments
+	}
+
+	meta, ok := functionCalls.itemMeta[itemID]
+	if !ok {
+		return nil
+	}
+	callID := strings.TrimSpace(meta.CallID)
+	if callID == "" {
+		callID = itemID
+	}
+	name := strings.TrimSpace(meta.Name)
+	if name == "" {
+		return nil
+	}
+
+	return &ToolCall{
+		ID:        callID,
+		Name:      name,
+		Arguments: arguments,
+		Status:    "completed",
 	}
 }
 

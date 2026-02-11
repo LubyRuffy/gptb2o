@@ -62,6 +62,8 @@ func main() {
 	log.Printf("try: curl http://%s%s/models", exampleAddr, *basePath)
 	log.Printf("try: curl http://%s%s/responses -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"input\":\"hi\",\"stream\":false}'", exampleAddr, *basePath, gptb2o.DefaultModelFullID)
 	log.Printf("OpenAI SDK base_url: http://%s%s", exampleAddr, *basePath)
+	log.Printf("try: curl http://%s%s/messages -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}'", exampleAddr, *basePath, gptb2o.DefaultModelFullID)
+	log.Printf("Claude Code base_url: http://%s%s", exampleAddr, *basePath)
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Println(err)

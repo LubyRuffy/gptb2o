@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LubyRuffy/gptb2o"
@@ -36,11 +37,18 @@ type claudeMessagesRequest struct {
 	System    claudeContentField `json:"system,omitempty"`
 	Stream    bool               `json:"stream"`
 	MaxTokens int                `json:"max_tokens"`
+	Tools     []claudeTool       `json:"tools,omitempty"`
 }
 
 type claudeMessage struct {
 	Role    string             `json:"role"`
 	Content claudeContentField `json:"content"`
+}
+
+type claudeTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
 type claudeContentField struct {
@@ -52,20 +60,25 @@ func (f *claudeContentField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type claudeContentText struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+type claudeContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     map[string]any  `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 }
 
 type claudeMessageResponse struct {
-	ID           string              `json:"id"`
-	Type         string              `json:"type"`
-	Role         string              `json:"role"`
-	Model        string              `json:"model"`
-	Content      []claudeContentText `json:"content"`
-	StopReason   string              `json:"stop_reason"`
-	StopSequence *string             `json:"stop_sequence"`
-	Usage        claudeUsage         `json:"usage"`
+	ID           string               `json:"id"`
+	Type         string               `json:"type"`
+	Role         string               `json:"role"`
+	Model        string               `json:"model"`
+	Content      []claudeContentBlock `json:"content"`
+	StopReason   string               `json:"stop_reason"`
+	StopSequence *string              `json:"stop_sequence"`
+	Usage        claudeUsage          `json:"usage"`
 }
 
 type claudeUsage struct {
@@ -122,20 +135,53 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	}
 	modelID = gptb2o.NormalizeModelID(modelID)
 
+	tools, err := convertClaudeTools(req.Tools)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	chatInput, err := convertClaudeMessages(req.System, req.Messages)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	chatModel, err := h.newChatModel(r.Context(), modelID, nil, nil)
-	if err != nil {
-		h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
+	if req.Stream {
+		toolCallChan := make(chan *backend.ToolCall, 16)
+		chatModel, err := h.newChatModel(r.Context(), modelID, tools, func(call *backend.ToolCall) {
+			if call == nil {
+				return
+			}
+			callCopy := *call
+			select {
+			case toolCallChan <- &callCopy:
+			default:
+			}
+		})
+		if err != nil {
+			h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
+			return
+		}
+		h.writeMessagesStream(w, r, chatModel, req.Model, chatInput, toolCallChan)
 		return
 	}
 
-	if req.Stream {
-		h.writeMessagesStream(w, r, chatModel, modelID, chatInput)
+	var (
+		toolCalls   []*backend.ToolCall
+		toolCallsMu sync.Mutex
+	)
+	chatModel, err := h.newChatModel(r.Context(), modelID, tools, func(call *backend.ToolCall) {
+		if call == nil {
+			return
+		}
+		callCopy := *call
+		toolCallsMu.Lock()
+		toolCalls = append(toolCalls, &callCopy)
+		toolCallsMu.Unlock()
+	})
+	if err != nil {
+		h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
 		return
 	}
 
@@ -149,19 +195,52 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	if respMsg != nil {
 		text = respMsg.Content
 	}
+
+	content := make([]claudeContentBlock, 0, 1)
+	if strings.TrimSpace(text) != "" {
+		content = append(content, claudeContentBlock{Type: "text", Text: text})
+	}
+	lastArgs := make(map[string]string)
+	hasToolUse := false
+	toolCallsMu.Lock()
+	for _, call := range toolCalls {
+		block, ok := claudeToolUseBlockFromCall(call, lastArgs)
+		if !ok {
+			continue
+		}
+		content = append(content, block)
+		hasToolUse = true
+	}
+	toolCallsMu.Unlock()
+
+	stopReason := "end_turn"
+	if hasToolUse {
+		stopReason = "tool_use"
+	}
+	if len(content) == 0 {
+		content = append(content, claudeContentBlock{Type: "text", Text: ""})
+	}
+
 	resp := claudeMessageResponse{
 		ID:         "msg_" + uuid.NewString(),
 		Type:       "message",
 		Role:       "assistant",
 		Model:      req.Model,
-		Content:    []claudeContentText{{Type: "text", Text: text}},
-		StopReason: "end_turn",
+		Content:    content,
+		StopReason: stopReason,
 		Usage:      claudeUsage{},
 	}
 	h.writeJSON(w, resp)
 }
 
-func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http.Request, chatModel chatModel, model string, chatInput []*schema.Message) {
+func (h *claudeCompatHandler) writeMessagesStream(
+	w http.ResponseWriter,
+	r *http.Request,
+	chatModel chatModel,
+	model string,
+	chatInput []*schema.Message,
+	toolCallChan <-chan *backend.ToolCall,
+) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -179,54 +258,115 @@ func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http
 	}
 
 	msgID := "msg_" + uuid.NewString()
-	startPayload := map[string]any{
+	writeClaudeSSEEvent(w, flusher, "message_start", map[string]any{
 		"type": "message_start",
 		"message": claudeMessageResponse{
 			ID:         msgID,
 			Type:       "message",
 			Role:       "assistant",
 			Model:      model,
-			Content:    []claudeContentText{},
+			Content:    []claudeContentBlock{},
 			StopReason: "",
 			Usage:      claudeUsage{},
 		},
-	}
-	writeClaudeSSEEvent(w, flusher, "message_start", startPayload)
-	writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
-		"type":  "content_block_start",
-		"index": 0,
-		"content_block": map[string]any{
-			"type": "text",
-			"text": "",
-		},
 	})
 
-	for {
-		msg, err := sr.Recv()
-		if err != nil {
-			break
+	blockIndex := 0
+	textBlockOpen := false
+	textBlockIndex := 0
+	lastToolArgs := make(map[string]string)
+	hasToolUse := false
+
+	closeTextBlock := func() {
+		if !textBlockOpen {
+			return
 		}
-		if msg == nil || strings.TrimSpace(msg.Content) == "" {
-			continue
+		writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+			"type":  "content_block_stop",
+			"index": textBlockIndex,
+		})
+		textBlockOpen = false
+	}
+	startTextBlock := func() {
+		if textBlockOpen {
+			return
+		}
+		textBlockIndex = blockIndex
+		blockIndex++
+		writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
+			"type":  "content_block_start",
+			"index": textBlockIndex,
+			"content_block": map[string]any{
+				"type": "text",
+				"text": "",
+			},
+		})
+		textBlockOpen = true
+	}
+	emitText := func(delta string) {
+		if strings.TrimSpace(delta) == "" {
+			return
+		}
+		if !textBlockOpen {
+			startTextBlock()
 		}
 		writeClaudeSSEEvent(w, flusher, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
-			"index": 0,
+			"index": textBlockIndex,
 			"delta": map[string]any{
 				"type": "text_delta",
-				"text": msg.Content,
+				"text": delta,
 			},
 		})
 	}
+	flushToolCalls := func() {
+		for {
+			select {
+			case call := <-toolCallChan:
+				block, ok := claudeToolUseBlockFromCall(call, lastToolArgs)
+				if !ok {
+					continue
+				}
+				closeTextBlock()
+				writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
+					"type":          "content_block_start",
+					"index":         blockIndex,
+					"content_block": block,
+				})
+				writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": blockIndex,
+				})
+				blockIndex++
+				hasToolUse = true
+			default:
+				return
+			}
+		}
+	}
 
-	writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
-		"type":  "content_block_stop",
-		"index": 0,
-	})
+	for {
+		flushToolCalls()
+		msg, recvErr := sr.Recv()
+		if recvErr != nil {
+			flushToolCalls()
+			break
+		}
+		if msg == nil {
+			continue
+		}
+		emitText(msg.Content)
+	}
+
+	closeTextBlock()
+	stopReason := "end_turn"
+	if hasToolUse {
+		stopReason = "tool_use"
+	}
 	writeClaudeSSEEvent(w, flusher, "message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason":   "end_turn",
+			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
 		"usage": claudeUsage{},
@@ -241,32 +381,68 @@ func writeClaudeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event stri
 	flusher.Flush()
 }
 
+func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	result := make([]openaiapi.OpenAITool, 0, len(tools))
+	nameSeen := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			return nil, fmt.Errorf("tool name is required")
+		}
+		key := strings.ToLower(name)
+		if _, ok := nameSeen[key]; ok {
+			continue
+		}
+		nameSeen[key] = struct{}{}
+		result = append(result, openaiapi.OpenAITool{
+			Type: "function",
+			Function: openaiapi.OpenAIToolFunction{
+				Name:        name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			},
+		})
+	}
+	return result, nil
+}
+
 func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
 	result := make([]*schema.Message, 0, len(messages)+1)
-	if systemText, err := claudeContentToText(system); err != nil {
+	if systemText, err := claudeContentToText(system.raw); err != nil {
 		return nil, err
 	} else if strings.TrimSpace(systemText) != "" {
 		result = append(result, schema.SystemMessage(systemText))
 	}
 
 	for _, msg := range messages {
-		role := strings.TrimSpace(msg.Role)
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		if role == "" {
 			return nil, fmt.Errorf("message role is required")
 		}
-		text, err := claudeContentToText(msg.Content)
+		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
 		if err != nil {
 			return nil, err
 		}
-		text = strings.TrimSpace(text)
-		if text == "" {
-			continue
-		}
 		switch role {
+		case "system":
+			text, err := claudeBlocksToText(blocks)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(text) != "" {
+				result = append(result, schema.SystemMessage(text))
+			}
 		case "user":
-			result = append(result, schema.UserMessage(text))
+			if err := appendClaudeUserBlocks(&result, blocks); err != nil {
+				return nil, err
+			}
 		case "assistant":
-			result = append(result, schema.AssistantMessage(text, nil))
+			if err := appendClaudeAssistantBlocks(&result, blocks); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, fmt.Errorf("unsupported role: %s", role)
 		}
@@ -277,33 +453,208 @@ func convertClaudeMessages(system claudeContentField, messages []claudeMessage) 
 	return result, nil
 }
 
-func claudeContentToText(content claudeContentField) (string, error) {
-	trimmed := strings.TrimSpace(string(content.raw))
+func parseClaudeContentBlocks(raw json.RawMessage) ([]claudeContentBlock, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	if trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, fmt.Errorf("unsupported message content")
+		}
+		return []claudeContentBlock{{Type: "text", Text: text}}, nil
+	}
+	if trimmed[0] == '{' {
+		var single claudeContentBlock
+		if err := json.Unmarshal(raw, &single); err != nil {
+			return nil, fmt.Errorf("unsupported message content")
+		}
+		return []claudeContentBlock{single}, nil
+	}
+	var blocks []claudeContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, fmt.Errorf("unsupported message content")
+	}
+	return blocks, nil
+}
+
+func appendClaudeUserBlocks(result *[]*schema.Message, blocks []claudeContentBlock) error {
+	var textBuilder strings.Builder
+	flushUserText := func() {
+		text := strings.TrimSpace(textBuilder.String())
+		if text != "" {
+			*result = append(*result, schema.UserMessage(text))
+		}
+		textBuilder.Reset()
+	}
+
+	for _, block := range blocks {
+		t := strings.ToLower(strings.TrimSpace(block.Type))
+		switch t {
+		case "", "text":
+			textBuilder.WriteString(block.Text)
+		case "tool_result":
+			flushUserText()
+			toolUseID := strings.TrimSpace(block.ToolUseID)
+			if toolUseID == "" {
+				return fmt.Errorf("tool_result.tool_use_id is required")
+			}
+			output, err := claudeContentToText(block.Content)
+			if err != nil {
+				return err
+			}
+			output = strings.TrimSpace(output)
+			if output == "" {
+				output = "{}"
+			}
+			*result = append(*result, &schema.Message{
+				Role:       schema.Tool,
+				ToolCallID: toolUseID,
+				Content:    output,
+			})
+		default:
+			// 忽略非文本块（如 image），保持行为兼容。
+			continue
+		}
+	}
+	flushUserText()
+	return nil
+}
+
+func appendClaudeAssistantBlocks(result *[]*schema.Message, blocks []claudeContentBlock) error {
+	var textBuilder strings.Builder
+	toolCalls := make([]schema.ToolCall, 0, len(blocks))
+	for _, block := range blocks {
+		t := strings.ToLower(strings.TrimSpace(block.Type))
+		switch t {
+		case "", "text":
+			textBuilder.WriteString(block.Text)
+		case "tool_use":
+			callID := strings.TrimSpace(block.ID)
+			name := strings.TrimSpace(block.Name)
+			if callID == "" || name == "" {
+				continue
+			}
+			arguments, err := claudeToolInputToArguments(block.Input)
+			if err != nil {
+				return err
+			}
+			toolCalls = append(toolCalls, schema.ToolCall{
+				ID:   callID,
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      name,
+					Arguments: arguments,
+				},
+			})
+		default:
+			continue
+		}
+	}
+
+	text := strings.TrimSpace(textBuilder.String())
+	if text == "" && len(toolCalls) == 0 {
+		return nil
+	}
+	*result = append(*result, &schema.Message{
+		Role:      schema.Assistant,
+		Content:   text,
+		ToolCalls: toolCalls,
+	})
+	return nil
+}
+
+func claudeBlocksToText(blocks []claudeContentBlock) (string, error) {
+	var builder strings.Builder
+	for _, block := range blocks {
+		if strings.ToLower(strings.TrimSpace(block.Type)) != "text" && strings.TrimSpace(block.Type) != "" {
+			continue
+		}
+		builder.WriteString(block.Text)
+	}
+	return builder.String(), nil
+}
+
+func claudeContentToText(raw json.RawMessage) (string, error) {
+	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return "", nil
 	}
 	if trimmed[0] == '"' {
 		var text string
-		if err := json.Unmarshal(content.raw, &text); err != nil {
+		if err := json.Unmarshal(raw, &text); err != nil {
 			return "", fmt.Errorf("unsupported message content")
 		}
 		return text, nil
 	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(content.raw, &parts); err != nil {
-		return "", fmt.Errorf("unsupported message content")
-	}
-	var builder strings.Builder
-	for _, part := range parts {
-		if strings.TrimSpace(part.Type) != "text" {
-			continue
+
+	var contentBlocks []claudeContentBlock
+	if err := json.Unmarshal(raw, &contentBlocks); err == nil {
+		var builder strings.Builder
+		for _, block := range contentBlocks {
+			if strings.ToLower(strings.TrimSpace(block.Type)) != "text" && strings.TrimSpace(block.Type) != "" {
+				continue
+			}
+			builder.WriteString(block.Text)
 		}
-		builder.WriteString(part.Text)
+		return builder.String(), nil
 	}
-	return builder.String(), nil
+
+	var textObj map[string]any
+	if err := json.Unmarshal(raw, &textObj); err == nil {
+		if t, ok := textObj["type"].(string); ok && strings.TrimSpace(strings.ToLower(t)) == "text" {
+			if text, ok := textObj["text"].(string); ok {
+				return text, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unsupported message content")
+}
+
+func claudeToolInputToArguments(input map[string]any) (string, error) {
+	if input == nil {
+		return "{}", nil
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("invalid tool_use input")
+	}
+	return string(data), nil
+}
+
+func claudeToolUseBlockFromCall(call *backend.ToolCall, lastArgs map[string]string) (claudeContentBlock, bool) {
+	if call == nil {
+		return claudeContentBlock{}, false
+	}
+	name := strings.TrimSpace(call.Name)
+	callID := strings.TrimSpace(call.ID)
+	if name == "" || callID == "" {
+		return claudeContentBlock{}, false
+	}
+	args, ok := toolCallArgumentsForStream(call, lastArgs)
+	if !ok {
+		return claudeContentBlock{}, false
+	}
+	input := map[string]any{}
+	if strings.TrimSpace(args) != "" {
+		var decoded any
+		if err := json.Unmarshal([]byte(args), &decoded); err == nil {
+			if m, ok := decoded.(map[string]any); ok {
+				input = m
+			} else {
+				input = map[string]any{"value": decoded}
+			}
+		} else {
+			input = map[string]any{"raw": args}
+		}
+	}
+	return claudeContentBlock{
+		Type:  "tool_use",
+		ID:    callID,
+		Name:  name,
+		Input: input,
+	}, true
 }
 
 func normalizeClaudeModel(model string) string {

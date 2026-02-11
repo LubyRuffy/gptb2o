@@ -154,6 +154,73 @@ func TestIntegration_Responses_StreamTrue_SSE_EndToEnd(t *testing.T) {
 	require.NotContains(t, s, "data: [DONE]\n")
 }
 
+func TestIntegration_Responses_DropCodeInterpreterAtProxyLayer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var gotBackendRequest int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&gotBackendRequest, 1)
+		defer r.Body.Close()
+
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+
+		hasCodeInterpreter := false
+		for _, tool := range payload.Tools {
+			if tool.Type == "code_interpreter" {
+				hasCodeInterpreter = true
+				break
+			}
+		}
+
+		require.False(t, hasCodeInterpreter)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_it_drop_ci\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	r := gin.New()
+	require.NoError(t, openaihttp.RegisterGinRoutes(r, openaihttp.Config{
+		BasePath:   "/v1",
+		BackendURL: backend.URL,
+		HTTPClient: backend.Client(),
+		Originator: "integration-test",
+		AuthProvider: func(ctx context.Context) (string, string, error) {
+			return "token", "acc", nil
+		},
+	}))
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model": %q,
+  "input": "hi",
+  "stream": false,
+  "tools": [
+    {"type": "code_interpreter"}
+  ]
+}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+
+	resp, err := http.Post(srv.URL+"/v1/responses", "application/json", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, int32(1), atomic.LoadInt32(&gotBackendRequest))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var completed map[string]any
+	require.NoError(t, json.Unmarshal(body, &completed))
+	require.Equal(t, "resp_it_drop_ci", completed["id"])
+}
+
 func TestIntegration_ClaudeMessages_ReasoningEffort_FromConfig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

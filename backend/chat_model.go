@@ -118,6 +118,57 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 		return "", err
 	}
 
+	currentPayload := payload
+	retriedWithoutCodeInterpreter := false
+	retriedReasoningEffort := false
+	for {
+		content, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
+		if err == nil {
+			return content, nil
+		}
+
+		var statusErr *backendRequestStatusError
+		if !retriedWithoutCodeInterpreter && errors.As(err, &statusErr) &&
+			statusErr.status == http.StatusBadRequest &&
+			IsUnsupportedToolTypeError(statusErr.message, ToolTypeCodeInterpreter) {
+			filteredTools, removed := RemoveToolTypeDefinitions(currentPayload.Tools, ToolTypeCodeInterpreter)
+			if removed {
+				currentPayload.Tools = filteredTools
+				retriedWithoutCodeInterpreter = true
+				continue
+			}
+		}
+		if !retriedReasoningEffort && errors.As(err, &statusErr) &&
+			statusErr.status == http.StatusBadRequest &&
+			currentPayload.Reasoning != nil {
+			currentEffort := strings.TrimSpace(currentPayload.Reasoning.Effort)
+			if fallbackEffort, ok := FallbackReasoningEffort(currentEffort); ok &&
+				IsUnsupportedReasoningEffortError(statusErr.message, currentEffort) {
+				currentPayload.Reasoning = &requestReasoning{Effort: fallbackEffort}
+				retriedReasoningEffort = true
+				continue
+			}
+		}
+		return "", err
+	}
+}
+
+type backendRequestStatusError struct {
+	status  int
+	message string
+}
+
+func (e *backendRequestStatusError) Error() string {
+	if e == nil {
+		return "backend request failed"
+	}
+	if strings.TrimSpace(e.message) == "" {
+		return fmt.Sprintf("backend request failed with status %d", e.status)
+	}
+	return fmt.Sprintf("backend request failed with status %d: %s", e.status, strings.TrimSpace(e.message))
+}
+
+func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPayload, onDelta func(string) error) (string, error) {
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to encode backend request: %w", err)
@@ -145,7 +196,7 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return "", fmt.Errorf("backend request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", &backendRequestStatusError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
 	}
 
 	content, err := readBackendSSE(ctx, resp.Body, onDelta, m.toolCallHandler)
@@ -286,13 +337,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 }
 
 func normalizeReasoningEffort(s string) string {
-	trimmed := strings.TrimSpace(s)
-	switch strings.ToLower(trimmed) {
-	case "", "undefined", "[undefined]", "null", "[null]":
-		return ""
-	default:
-		return trimmed
-	}
+	return NormalizeReasoningEffort(s)
 }
 
 func resolveMessageContent(msg *schema.Message) string {

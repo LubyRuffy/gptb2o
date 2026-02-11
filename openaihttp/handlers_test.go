@@ -344,6 +344,47 @@ func TestResponses_ReasoningEffort_FromRequest(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestResponses_ReasoningEffort_FromRequest_XHighPreserved(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.Equal(t, "xhigh", payload.Reasoning.Effort)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reasoning_xhigh\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":"hi",
+  "stream":false,
+  "reasoning":{"effort":"xhigh"}
+}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestResponses_ReasoningEffort_FromConfigDefault(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -379,4 +420,55 @@ func TestResponses_ReasoningEffort_FromConfigDefault(t *testing.T) {
 
 	responsesHandler(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestResponses_ReasoningEffort_XHighUnsupported_RetryToHigh(t *testing.T) {
+	var callCount int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := atomic.AddInt32(&callCount, 1)
+		defer r.Body.Close()
+
+		var payload struct {
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		if call == 1 {
+			require.Equal(t, "xhigh", payload.Reasoning.Effort)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Unsupported value: 'xhigh' is not supported with the 'gpt-5.1-codex' model. Supported values are: 'low', 'medium', and 'high'.","type":"invalidrequesterror","param":"reasoning.effort","code":"unsupported_value"}}`)
+			return
+		}
+		require.Equal(t, "high", payload.Reasoning.Effort)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reasoning_retry\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":"hi",
+  "stream":false,
+  "reasoning":{"effort":"xhigh"}
+}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount))
 }

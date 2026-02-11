@@ -33,6 +33,41 @@ type ToolDefinition struct {
 	Container   *ToolContainer         `json:"container,omitempty"`
 }
 
+// IsUnsupportedToolTypeError 判断后端错误信息是否表示某个 tool type 不受支持。
+func IsUnsupportedToolTypeError(message string, toolType ToolType) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	target := strings.ToLower(strings.TrimSpace(string(toolType)))
+	if normalized == "" || target == "" {
+		return false
+	}
+	return strings.Contains(normalized, "unsupported tool type") && strings.Contains(normalized, target)
+}
+
+// RemoveToolTypeDefinitions 从 tool 定义列表中移除指定 type，返回新列表及是否发生移除。
+func RemoveToolTypeDefinitions(tools []ToolDefinition, toolType ToolType) ([]ToolDefinition, bool) {
+	target := strings.ToLower(strings.TrimSpace(string(toolType)))
+	if len(tools) == 0 || target == "" {
+		return tools, false
+	}
+
+	result := make([]ToolDefinition, 0, len(tools))
+	removed := false
+	for _, tool := range tools {
+		if strings.EqualFold(strings.TrimSpace(tool.Type), target) {
+			removed = true
+			continue
+		}
+		result = append(result, tool)
+	}
+	if !removed {
+		return tools, false
+	}
+	if len(result) == 0 {
+		return nil, true
+	}
+	return result, true
+}
+
 // FormatNativeToolName 将内置工具名规范化为 "native.<name>"。
 func FormatNativeToolName(name string) string {
 	name = strings.TrimSpace(name)
@@ -46,6 +81,7 @@ func FormatNativeToolName(name string) string {
 }
 
 // NativeToolsFromOpenAITools 将 OpenAI tools 映射为 backend 的原生工具集合（去重）。
+// 当前仅允许 web_search；code_interpreter/python_runner 在 OpenAI 前端接口层不透传。
 func NativeToolsFromOpenAITools(tools []openaiapi.OpenAITool) []NativeTool {
 	if len(tools) == 0 {
 		return nil
@@ -67,9 +103,6 @@ func NativeToolsFromOpenAITools(tools []openaiapi.OpenAITool) []NativeTool {
 		case string(ToolTypeWebSearch):
 			addNative(NativeTool{Type: ToolTypeWebSearch})
 			continue
-		case string(ToolTypeCodeInterpreter):
-			addNative(NativeTool{Type: ToolTypeCodeInterpreter, Container: &ToolContainer{Type: "auto"}})
-			continue
 		}
 
 		if strings.ToLower(strings.TrimSpace(tool.Type)) != "function" {
@@ -79,8 +112,6 @@ func NativeToolsFromOpenAITools(tools []openaiapi.OpenAITool) []NativeTool {
 		switch name {
 		case "web_search":
 			addNative(NativeTool{Type: ToolTypeWebSearch})
-		case "python_runner":
-			addNative(NativeTool{Type: ToolTypeCodeInterpreter, Container: &ToolContainer{Type: "auto"}})
 		}
 	}
 

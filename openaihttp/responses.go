@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -118,9 +119,11 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 		if err != nil {
 			var httpErr *httpErrorWithStatus
 			if errors.As(err, &httpErr) && httpErr != nil {
+				log.Printf("[gptb2o][responses] backend request failed: status=%d model=%s stream=%t message=%q", httpErr.status, normalizedModel, req.Stream, compactLogMessage(httpErr.message))
 				writeOpenAIError(w, httpErr.status, httpErr.Error())
 				return
 			}
+			log.Printf("[gptb2o][responses] backend request error: model=%s stream=%t err=%v", normalizedModel, req.Stream, err)
 			writeOpenAIError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -149,39 +152,85 @@ func doBackendResponsesRequest(
 	accountID string,
 	payload backendResponsesPayload,
 ) (*http.Response, error) {
-	bodyBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode backend request: %w", err)
-	}
+	currentPayload := payload
+	retriedWithoutCodeInterpreter := false
+	retriedReasoningEffort := false
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BackendURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to build backend request: %w", err)
-	}
+	for {
+		bodyBytes, err := json.Marshal(currentPayload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode backend request: %w", err)
+		}
 
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-	if strings.TrimSpace(accountID) != "" {
-		req.Header.Set("ChatGPT-Account-Id", accountID)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Originator", cfg.Originator)
-	req.Header.Set("User-Agent", cfg.Originator)
-	req.Header.Set("Accept", sseContentTypeValue)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.BackendURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to build backend request: %w", err)
+		}
 
-	resp, err := cfg.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("backend request failed: %w", err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
-		defer resp.Body.Close()
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+		if strings.TrimSpace(accountID) != "" {
+			req.Header.Set("ChatGPT-Account-Id", accountID)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Originator", cfg.Originator)
+		req.Header.Set("User-Agent", cfg.Originator)
+		req.Header.Set("Accept", sseContentTypeValue)
+
+		resp, err := cfg.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("backend request failed: %w", err)
+		}
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest {
+			return resp, nil
+		}
+
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBackendErrBytes))
+		_ = resp.Body.Close()
+		message := strings.TrimSpace(string(body))
+
+		if !retriedWithoutCodeInterpreter && resp.StatusCode == http.StatusBadRequest &&
+			backend.IsUnsupportedToolTypeError(message, backend.ToolTypeCodeInterpreter) {
+			filteredTools, removed := backend.RemoveToolTypeDefinitions(currentPayload.Tools, backend.ToolTypeCodeInterpreter)
+			if removed {
+				log.Printf("[gptb2o][responses] backend rejected code_interpreter, retry without it: status=%d message=%q", resp.StatusCode, compactLogMessage(message))
+				currentPayload.Tools = filteredTools
+				retriedWithoutCodeInterpreter = true
+				continue
+			}
+		}
+		if !retriedReasoningEffort && resp.StatusCode == http.StatusBadRequest && currentPayload.Reasoning != nil {
+			currentEffort := strings.TrimSpace(currentPayload.Reasoning.Effort)
+			if fallbackEffort, ok := backend.FallbackReasoningEffort(currentEffort); ok &&
+				backend.IsUnsupportedReasoningEffortError(message, currentEffort) {
+				log.Printf(
+					"[gptb2o][responses] backend rejected reasoning.effort=%q, retry with %q: status=%d message=%q",
+					currentEffort, fallbackEffort, resp.StatusCode, compactLogMessage(message),
+				)
+				currentPayload.Reasoning = &responsesReasoning{Effort: fallbackEffort}
+				retriedReasoningEffort = true
+				continue
+			}
+		}
+
 		status := resp.StatusCode
 		if status >= http.StatusInternalServerError {
 			status = http.StatusBadGateway
 		}
-		return nil, &httpErrorWithStatus{status: status, message: strings.TrimSpace(string(body))}
+		return nil, &httpErrorWithStatus{status: status, message: message}
 	}
-	return resp, nil
+}
+
+func compactLogMessage(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
+	const maxLen = 512
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen] + "...(truncated)"
 }
 
 type httpErrorWithStatus struct {
@@ -227,7 +276,7 @@ func normalizeUndefinedString(s string) string {
 }
 
 func normalizeReasoningEffort(s string) string {
-	return normalizeUndefinedString(s)
+	return backend.NormalizeReasoningEffort(s)
 }
 
 func reasoningOrNil(effort string) *responsesReasoning {

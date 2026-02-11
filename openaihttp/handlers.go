@@ -19,6 +19,7 @@ func Handlers(cfg Config) (modelsHandler http.HandlerFunc, chatHandler http.Hand
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	chatModelFactory := newChatModelFactory(resolved)
 
 	compat, err := newCompatHandler(compatConfig{
 		Now:               time.Now,
@@ -26,45 +27,7 @@ func Handlers(cfg Config) (modelsHandler http.HandlerFunc, chatHandler http.Hand
 		WriteJSON:         writeJSON,
 		WriteOpenAIError:  writeOpenAIError,
 		SystemFingerprint: resolved.SystemFingerprint,
-		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
-			accessToken, accountID, err := resolved.AuthProvider(ctx)
-			if err != nil {
-				return nil, &httpError{
-					Status:  http.StatusServiceUnavailable,
-					Message: "auth not available",
-					Err:     err,
-				}
-			}
-
-			m, err := backend.NewChatModel(backend.ChatModelConfig{
-				Model:       modelID,
-				BackendURL:  resolved.BackendURL,
-				AccessToken: accessToken,
-				AccountID:   accountID,
-				HTTPClient:  resolved.HTTPClient,
-				Originator:  resolved.Originator,
-			})
-			if err != nil {
-				return nil, &httpError{
-					Status:  http.StatusInternalServerError,
-					Message: "failed to create backend model",
-					Err:     err,
-				}
-			}
-
-			nativeTools := backend.NativeToolsFromOpenAITools(tools)
-			if len(nativeTools) > 0 {
-				m = m.WithNativeTools(nativeTools)
-			}
-			functionTools := backend.FunctionToolsFromOpenAITools(tools)
-			if len(functionTools) > 0 {
-				m = m.WithFunctionTools(functionTools)
-			}
-			if toolCallHandler != nil {
-				m = m.WithToolCallHandler(toolCallHandler)
-			}
-			return m, nil
-		},
+		NewChatModel:      chatModelFactory,
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -74,6 +37,65 @@ func Handlers(cfg Config) (modelsHandler http.HandlerFunc, chatHandler http.Hand
 	chatHandler = compat.handleChatCompletions
 	responsesHandler = newResponsesHandler(resolved)
 	return modelsHandler, chatHandler, responsesHandler, nil
+}
+
+func ClaudeMessagesHandler(cfg Config) (http.HandlerFunc, error) {
+	resolved, err := resolveConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now:          time.Now,
+		NewChatModel: newChatModelFactory(resolved),
+		WriteJSON:    writeJSON,
+		WriteError:   writeClaudeError,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return h.handleMessages, nil
+}
+
+func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+	return func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+		accessToken, accountID, err := resolved.AuthProvider(ctx)
+		if err != nil {
+			return nil, &httpError{
+				Status:  http.StatusServiceUnavailable,
+				Message: "auth not available",
+				Err:     err,
+			}
+		}
+
+		m, err := backend.NewChatModel(backend.ChatModelConfig{
+			Model:       modelID,
+			BackendURL:  resolved.BackendURL,
+			AccessToken: accessToken,
+			AccountID:   accountID,
+			HTTPClient:  resolved.HTTPClient,
+			Originator:  resolved.Originator,
+		})
+		if err != nil {
+			return nil, &httpError{
+				Status:  http.StatusInternalServerError,
+				Message: "failed to create backend model",
+				Err:     err,
+			}
+		}
+
+		nativeTools := backend.NativeToolsFromOpenAITools(tools)
+		if len(nativeTools) > 0 {
+			m = m.WithNativeTools(nativeTools)
+		}
+		functionTools := backend.FunctionToolsFromOpenAITools(tools)
+		if len(functionTools) > 0 {
+			m = m.WithFunctionTools(functionTools)
+		}
+		if toolCallHandler != nil {
+			m = m.WithToolCallHandler(toolCallHandler)
+		}
+		return m, nil
+	}
 }
 
 type resolvedConfig struct {

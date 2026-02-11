@@ -19,5 +19,10 @@ func RegisterGinRoutes(r gin.IRouter, cfg Config) error {
 	r.GET(joinPath(basePath, "/models"), gin.WrapF(modelsHandler))
 	r.POST(joinPath(basePath, "/chat/completions"), gin.WrapF(chatHandler))
 	r.POST(joinPath(basePath, "/responses"), gin.WrapF(responsesHandler))
+	claudeHandler, err := ClaudeMessagesHandler(cfg)
+	if err != nil {
+		return err
+	}
+	r.POST(joinPath(basePath, "/messages"), gin.WrapF(claudeHandler))
 	return nil
 }

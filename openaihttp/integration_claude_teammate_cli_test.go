@@ -1,13 +1,16 @@
 package openaihttp_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,7 +140,41 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	}))
 	t.Cleanup(backendSrv.Close)
 
+	type gatewayReq struct {
+		Method string
+		Path   string
+		Body   string
+		JSON   map[string]any
+	}
+	var (
+		gatewayReqMu sync.Mutex
+		gatewayReqs  []gatewayReq
+	)
+
 	gateway := gin.New()
+	gateway.Use(func(c *gin.Context) {
+		req := c.Request
+		entry := gatewayReq{
+			Method: req.Method,
+			Path:   req.URL.Path,
+		}
+		if req.Body != nil {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+			_ = req.Body.Close()
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			entry.Body = string(bodyBytes)
+			if len(bodyBytes) > 0 && strings.Contains(strings.ToLower(req.Header.Get("Content-Type")), "application/json") {
+				var decoded map[string]any
+				if err := json.Unmarshal(bodyBytes, &decoded); err == nil {
+					entry.JSON = decoded
+				}
+			}
+		}
+		gatewayReqMu.Lock()
+		gatewayReqs = append(gatewayReqs, entry)
+		gatewayReqMu.Unlock()
+		c.Next()
+	})
 	require.NoError(t, openaihttp.RegisterGinRoutes(gateway, openaihttp.Config{
 		BasePath:   "/v1",
 		BackendURL: backendSrv.URL,
@@ -188,6 +225,38 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	require.True(t, sawTaskSchema.Load(), "first turn did not expose Task schema with required fields")
 	require.True(t, sawTaskToolResult.Load(), "second turn did not receive function_call_output for teammate Task")
 	require.GreaterOrEqual(t, atomic.LoadInt32(&reqCount), int32(2), "backend did not observe second turn")
+
+	gatewayReqMu.Lock()
+	defer gatewayReqMu.Unlock()
+	require.NotEmpty(t, gatewayReqs, "gateway should capture requests from claude CLI")
+	pathCount := make(map[string]int)
+	for _, r := range gatewayReqs {
+		pathCount[r.Path]++
+	}
+	paths := make([]string, 0, len(pathCount))
+	for p := range pathCount {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		t.Logf("claude gateway observed: %s x%d", p, pathCount[p])
+	}
+
+	var lastMessagesJSON map[string]any
+	for i := len(gatewayReqs) - 1; i >= 0; i-- {
+		if gatewayReqs[i].Path != "/v1/messages" || gatewayReqs[i].JSON == nil {
+			continue
+		}
+		lastMessagesJSON = gatewayReqs[i].JSON
+		break
+	}
+	require.NotNil(t, lastMessagesJSON, "missing parsed /v1/messages request JSON from claude CLI")
+	keys := make([]string, 0, len(lastMessagesJSON))
+	for k := range lastMessagesJSON {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	t.Logf("claude /v1/messages keys: %v", keys)
 }
 
 func writeBackendSSE(t *testing.T, w http.ResponseWriter, payload any) {

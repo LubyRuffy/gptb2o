@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
 	einoModel "github.com/cloudwego/eino/components/model"
@@ -227,7 +228,8 @@ func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "text", resp.Content[0].Type)
 	require.Equal(t, "pong", resp.Content[0].Text)
-	require.Equal(t, "end_turn", resp.StopReason)
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
 }
 
 func TestClaudeMessages_Stream_OK(t *testing.T) {
@@ -354,7 +356,8 @@ func TestClaudeMessages_NonStream_ToolUse(t *testing.T) {
 
 	var resp claudeMessageResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "tool_use", resp.StopReason)
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "tool_use", *resp.StopReason)
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "tool_use", resp.Content[0].Type)
 	require.Equal(t, "call_1", resp.Content[0].ID)
@@ -390,7 +393,8 @@ func TestClaudeMessages_NonStream_TaskToolUseEmptyArgumentsIgnored(t *testing.T)
 
 	var resp claudeMessageResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "end_turn", resp.StopReason)
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "text", resp.Content[0].Type)
 	require.Equal(t, "ok", resp.Content[0].Text)
@@ -430,7 +434,8 @@ func TestClaudeMessages_NonStream_TaskToolUseSkipsInProgressPartialArguments(t *
 
 	var resp claudeMessageResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	require.Equal(t, "tool_use", resp.StopReason)
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "tool_use", *resp.StopReason)
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "tool_use", resp.Content[0].Type)
 	require.Equal(t, "Task", resp.Content[0].Name)
@@ -704,4 +709,206 @@ func TestClaudeMessages_ConvertToolResultAndTools_OK(t *testing.T) {
 	require.Len(t, gotTools, 1)
 	require.Equal(t, "function", gotTools[0].Type)
 	require.Equal(t, "Read", gotTools[0].Function.Name)
+}
+
+func TestNormalizeClaudeModel_Aliases(t *testing.T) {
+	require.Equal(t, gptb2o.DefaultModelFullID, normalizeClaudeModel("sonnet"))
+	require.Equal(t, gptb2o.DefaultModelFullID, normalizeClaudeModel("OPUS"))
+	require.Equal(t, gptb2o.ModelNamespace+"gpt-5.1-codex-mini", normalizeClaudeModel("haiku"))
+}
+
+func TestToolCallArgumentsForClaudeStream_RequiresCompletedAndJSONObject(t *testing.T) {
+	lastArgs := map[string]string{}
+
+	_, ok := toolCallArgumentsForClaudeStream(&backend.ToolCall{
+		ID:        "call_1",
+		Name:      "Read",
+		Arguments: `{"path":"README.md"}`,
+		Status:    "in_progress",
+	}, lastArgs)
+	require.False(t, ok)
+
+	args, ok := toolCallArgumentsForClaudeStream(&backend.ToolCall{
+		ID:        "call_1",
+		Name:      "Read",
+		Arguments: `{"path":"README.md"}`,
+		Status:    "completed",
+	}, lastArgs)
+	require.True(t, ok)
+	require.Equal(t, `{"path":"README.md"}`, args)
+
+	_, ok = toolCallArgumentsForClaudeStream(&backend.ToolCall{
+		ID:        "call_2",
+		Name:      "Read",
+		Arguments: `not-json`,
+		Status:    "completed",
+	}, lastArgs)
+	require.False(t, ok)
+}
+
+func TestClaudeMessages_Stream_MessageStartStopReasonIsNull(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{streamMsgs: []*schema.Message{{Content: "hi"}}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var msgStart map[string]any
+	for _, ev := range events {
+		if ev.Name == "message_start" {
+			msgStart = ev.Data
+			break
+		}
+	}
+	require.NotNil(t, msgStart)
+
+	msg, ok := msgStart["message"].(map[string]any)
+	require.True(t, ok)
+	_, exists := msg["stop_reason"]
+	require.True(t, exists)
+	require.Nil(t, msg["stop_reason"])
+}
+
+func TestClaudeMessages_NonStream_StopSequences(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{generateResp: schema.AssistantMessage("helloSTOPworld", nil)}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024,"stop_sequences":["STOP"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "stop_sequence", *resp.StopReason)
+	require.NotNil(t, resp.StopSequence)
+	require.Equal(t, "STOP", *resp.StopSequence)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "hello", resp.Content[0].Text)
+}
+
+func TestClaudeMessages_NonStream_MaxTokens(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{generateResp: schema.AssistantMessage("abcdefgh", nil)}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "max_tokens", *resp.StopReason)
+	require.Nil(t, resp.StopSequence)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "abcd", resp.Content[0].Text)
+}
+
+func TestClaudeMessages_Stream_StopSequences(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{streamMsgs: []*schema.Message{{Content: "helloST"}, {Content: "OPworld"}}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1024,"stop_sequences":["STOP"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var gotText strings.Builder
+	var stopReason string
+	var stopSeq any
+	for _, ev := range events {
+		if ev.Name == "content_block_delta" {
+			delta, _ := ev.Data["delta"].(map[string]any)
+			if strings.TrimSpace(stringValue(delta["type"])) == "text_delta" {
+				gotText.WriteString(stringValue(delta["text"]))
+			}
+		}
+		if ev.Name == "message_delta" {
+			delta, _ := ev.Data["delta"].(map[string]any)
+			stopReason = stringValue(delta["stop_reason"])
+			stopSeq = delta["stop_sequence"]
+		}
+	}
+	require.Equal(t, "hello", gotText.String())
+	require.Equal(t, "stop_sequence", stopReason)
+	require.Equal(t, "STOP", stopSeq)
+}
+
+func TestClaudeMessages_Stream_MaxTokens(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{streamMsgs: []*schema.Message{{Content: "ab"}, {Content: "cdefg"}}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var gotText strings.Builder
+	var stopReason string
+	for _, ev := range events {
+		if ev.Name == "content_block_delta" {
+			delta, _ := ev.Data["delta"].(map[string]any)
+			if strings.TrimSpace(stringValue(delta["type"])) == "text_delta" {
+				gotText.WriteString(stringValue(delta["text"]))
+			}
+		}
+		if ev.Name == "message_delta" {
+			delta, _ := ev.Data["delta"].(map[string]any)
+			stopReason = stringValue(delta["stop_reason"])
+		}
+	}
+	require.Equal(t, "abcd", gotText.String())
+	require.Equal(t, "max_tokens", stopReason)
 }

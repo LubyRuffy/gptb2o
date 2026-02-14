@@ -14,7 +14,6 @@ import (
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
-	einoModel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
@@ -34,12 +33,19 @@ type claudeCompatHandler struct {
 }
 
 type claudeMessagesRequest struct {
-	Model     string             `json:"model"`
-	Messages  []claudeMessage    `json:"messages"`
-	System    claudeContentField `json:"system,omitempty"`
-	Stream    bool               `json:"stream"`
-	MaxTokens int                `json:"max_tokens"`
-	Tools     []claudeTool       `json:"tools,omitempty"`
+	Model         string             `json:"model"`
+	Messages      []claudeMessage    `json:"messages"`
+	System        claudeContentField `json:"system,omitempty"`
+	Stream        bool               `json:"stream"`
+	MaxTokens     int                `json:"max_tokens"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Tools         []claudeTool       `json:"tools,omitempty"`
+	ToolChoice    *claudeToolChoice  `json:"tool_choice,omitempty"`
+	Thinking      map[string]any     `json:"thinking,omitempty"`
+	Metadata      map[string]any     `json:"metadata,omitempty"`
+	Temperature   *float32           `json:"temperature,omitempty"`
+	TopP          *float32           `json:"top_p,omitempty"`
+	TopK          *int               `json:"top_k,omitempty"`
 }
 
 type claudeMessage struct {
@@ -51,6 +57,12 @@ type claudeTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"input_schema,omitempty"`
+}
+
+type claudeToolChoice struct {
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
 type claudeContentField struct {
@@ -78,14 +90,20 @@ type claudeMessageResponse struct {
 	Role         string               `json:"role"`
 	Model        string               `json:"model"`
 	Content      []claudeContentBlock `json:"content"`
-	StopReason   string               `json:"stop_reason"`
+	StopReason   *string              `json:"stop_reason"`
 	StopSequence *string              `json:"stop_sequence"`
 	Usage        claudeUsage          `json:"usage"`
 }
 
 type claudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+}
+
+type claudeMessageDeltaUsage struct {
+	OutputTokens int `json:"output_tokens,omitempty"`
 }
 
 type claudeCountTokensResponse struct {
@@ -129,11 +147,75 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
+	if req.MaxTokens <= 0 {
+		h.writeError(w, http.StatusBadRequest, "max_tokens is required")
+		return
+	}
 	if len(req.Messages) == 0 {
 		h.writeError(w, http.StatusBadRequest, "messages is required")
 		return
 	}
-	debugClaudeTaskToolSchema(req.Tools)
+	if req.Temperature != nil && req.TopP != nil {
+		h.writeError(w, http.StatusBadRequest, "temperature and top_p cannot both be set")
+		return
+	}
+	if req.Temperature != nil && (*req.Temperature < 0 || *req.Temperature > 1) {
+		h.writeError(w, http.StatusBadRequest, "temperature must be between 0 and 1")
+		return
+	}
+	if req.TopP != nil && (*req.TopP < 0 || *req.TopP > 1) {
+		h.writeError(w, http.StatusBadRequest, "top_p must be between 0 and 1")
+		return
+	}
+	if req.TopK != nil && *req.TopK < 0 {
+		h.writeError(w, http.StatusBadRequest, "top_k must be >= 0")
+		return
+	}
+	stopSequences := normalizeClaudeStopSequences(req.StopSequences)
+
+	toolsReq := req.Tools
+	disableParallelToolUse := false
+	if req.ToolChoice != nil {
+		disableParallelToolUse = req.ToolChoice.DisableParallelToolUse
+		choiceType := strings.ToLower(strings.TrimSpace(req.ToolChoice.Type))
+		switch choiceType {
+		case "", "auto":
+			// default
+		case "none":
+			toolsReq = nil
+		case "any":
+			if len(toolsReq) == 0 {
+				h.writeError(w, http.StatusBadRequest, "tools is required when tool_choice.type=any")
+				return
+			}
+		case "tool":
+			name := strings.TrimSpace(req.ToolChoice.Name)
+			if name == "" {
+				h.writeError(w, http.StatusBadRequest, "tool_choice.name is required when tool_choice.type=tool")
+				return
+			}
+			if len(toolsReq) == 0 {
+				h.writeError(w, http.StatusBadRequest, "tools is required when tool_choice.type=tool")
+				return
+			}
+			filtered := make([]claudeTool, 0, 1)
+			for _, t := range toolsReq {
+				if strings.EqualFold(strings.TrimSpace(t.Name), name) {
+					filtered = append(filtered, t)
+				}
+			}
+			if len(filtered) == 0 {
+				h.writeError(w, http.StatusBadRequest, "tool_choice.name not found in tools")
+				return
+			}
+			toolsReq = filtered
+		default:
+			h.writeError(w, http.StatusBadRequest, "invalid tool_choice.type")
+			return
+		}
+	}
+
+	debugClaudeTaskToolSchema(toolsReq)
 
 	modelID, err := resolveClaudeModelID(req.Model)
 	if err != nil {
@@ -141,7 +223,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tools, err := convertClaudeTools(req.Tools)
+	tools, err := convertClaudeTools(toolsReq)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -152,10 +234,13 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	inputTokens := estimateClaudeInputTokens(chatInput, tools)
 
 	if req.Stream {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
 		toolCallChan := make(chan *backend.ToolCall, 16)
-		chatModel, err := h.newChatModel(r.Context(), modelID, tools, func(call *backend.ToolCall) {
+		chatModel, err := h.newChatModel(ctx, modelID, tools, func(call *backend.ToolCall) {
 			if call == nil {
 				return
 			}
@@ -169,7 +254,8 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 			h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
 			return
 		}
-		h.writeMessagesStream(w, r, chatModel, req.Model, chatInput, toolCallChan)
+		chatModel = applyClaudeSamplingParams(chatModel, req.Temperature, req.TopP)
+		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, disableParallelToolUse, toolCallChan)
 		return
 	}
 
@@ -190,8 +276,9 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
 		return
 	}
+	chatModel = applyClaudeSamplingParams(chatModel, req.Temperature, req.TopP)
 
-	respMsg, err := chatModel.Generate(r.Context(), chatInput, einoModel.WithTemperature(0))
+	respMsg, err := chatModel.Generate(r.Context(), chatInput)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -201,10 +288,11 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	if respMsg != nil {
 		text = respMsg.Content
 	}
+	limitedText, limitStopReason, limitStopSequence := limitClaudeText(text, stopSequences, req.MaxTokens)
 
 	content := make([]claudeContentBlock, 0, 1)
-	if strings.TrimSpace(text) != "" {
-		content = append(content, claudeContentBlock{Type: "text", Text: text})
+	if strings.TrimSpace(limitedText) != "" {
+		content = append(content, claudeContentBlock{Type: "text", Text: limitedText})
 	}
 	lastArgs := make(map[string]string)
 	hasToolUse := false
@@ -220,23 +308,50 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	toolCallsMu.Unlock()
 
 	stopReason := "end_turn"
+	stopSequence := (*string)(nil)
 	if hasToolUse {
 		stopReason = "tool_use"
+	} else if limitStopReason != "" {
+		stopReason = limitStopReason
+		stopSequence = limitStopSequence
 	}
 	if len(content) == 0 {
 		content = append(content, claudeContentBlock{Type: "text", Text: ""})
 	}
 
+	outputTokens := estimateClaudeOutputTokens(content)
+	respStopReason := stopReason
 	resp := claudeMessageResponse{
-		ID:         "msg_" + uuid.NewString(),
-		Type:       "message",
-		Role:       "assistant",
-		Model:      req.Model,
-		Content:    content,
-		StopReason: stopReason,
-		Usage:      claudeUsage{},
+		ID:           "msg_" + uuid.NewString(),
+		Type:         "message",
+		Role:         "assistant",
+		Model:        req.Model,
+		Content:      content,
+		StopReason:   &respStopReason,
+		StopSequence: stopSequence,
+		Usage: claudeUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		},
 	}
 	h.writeJSON(w, resp)
+}
+
+func applyClaudeSamplingParams(m chatModel, temperature *float32, topP *float32) chatModel {
+	if m == nil {
+		return nil
+	}
+	backendModel, ok := m.(*backend.ChatModel)
+	if !ok {
+		return m
+	}
+	if temperature != nil {
+		backendModel = backendModel.WithTemperature(temperature)
+	}
+	if topP != nil {
+		backendModel = backendModel.WithTopP(topP)
+	}
+	return backendModel
 }
 
 func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -280,11 +395,16 @@ func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.R
 }
 
 func (h *claudeCompatHandler) writeMessagesStream(
+	ctx context.Context,
+	cancel context.CancelFunc,
 	w http.ResponseWriter,
-	r *http.Request,
 	chatModel chatModel,
 	model string,
 	chatInput []*schema.Message,
+	inputTokens int,
+	maxTokens int,
+	stopSequences []string,
+	disableParallelToolUse bool,
 	toolCallChan <-chan *backend.ToolCall,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -297,23 +417,26 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		return
 	}
 
-	sr, err := chatModel.Stream(r.Context(), chatInput)
+	sr, err := chatModel.Stream(ctx, chatInput)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defer sr.Close()
 
 	msgID := "msg_" + uuid.NewString()
+	startUsage := claudeUsage{InputTokens: inputTokens, OutputTokens: 0}
 	writeClaudeSSEEvent(w, flusher, "message_start", map[string]any{
 		"type": "message_start",
 		"message": claudeMessageResponse{
-			ID:         msgID,
-			Type:       "message",
-			Role:       "assistant",
-			Model:      model,
-			Content:    []claudeContentBlock{},
-			StopReason: "",
-			Usage:      claudeUsage{},
+			ID:           msgID,
+			Type:         "message",
+			Role:         "assistant",
+			Model:        model,
+			Content:      []claudeContentBlock{},
+			StopReason:   nil,
+			StopSequence: nil,
+			Usage:        startUsage,
 		},
 	})
 
@@ -323,6 +446,17 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	lastToolArgs := make(map[string]string)
 	hasToolUse := false
 	emittedContentBlock := false
+	stopReason := ""
+	var stopSequence *string
+
+	stopTriggered := false
+	outputChars := 0
+	textBuf := ""
+	maxStopLen := maxClaudeStopSequenceLen(stopSequences)
+	maxChars := 0
+	if maxTokens > 0 {
+		maxChars = maxTokens * 4
+	}
 
 	closeTextBlock := func() {
 		if !textBlockOpen {
@@ -351,8 +485,8 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		textBlockOpen = true
 		emittedContentBlock = true
 	}
-	emitText := func(delta string) {
-		if strings.TrimSpace(delta) == "" {
+	emitTextDelta := func(delta string) {
+		if delta == "" {
 			return
 		}
 		if !textBlockOpen {
@@ -366,15 +500,106 @@ func (h *claudeCompatHandler) writeMessagesStream(
 				"text": delta,
 			},
 		})
+		outputChars += len(delta)
 	}
+
+	emitTextSafe := func(delta string) {
+		// Claude 的流式输出允许出现仅包含空白的 delta（例如换行/缩进）。
+		// 这里不能 TrimSpace，否则会丢失模型输出。
+		if delta == "" || stopTriggered {
+			return
+		}
+		textBuf += delta
+		for {
+			if stopTriggered {
+				return
+			}
+
+			if maxChars > 0 && outputChars+len(textBuf) > maxChars {
+				allowed := maxChars - outputChars
+				if allowed > 0 {
+					emitTextDelta(textBuf[:allowed])
+				}
+				textBuf = ""
+				stopReason = "max_tokens"
+				stopSequence = nil
+				stopTriggered = true
+				if cancel != nil {
+					cancel()
+				}
+				return
+			}
+
+			if idx, seq, ok := findFirstClaudeStopSequence(textBuf, stopSequences); ok {
+				if idx > 0 {
+					emitTextDelta(textBuf[:idx])
+				}
+				textBuf = ""
+				stopReason = "stop_sequence"
+				stopSequence = &seq
+				stopTriggered = true
+				if cancel != nil {
+					cancel()
+				}
+				return
+			}
+
+			if maxStopLen <= 1 {
+				if textBuf != "" {
+					emitTextDelta(textBuf)
+					textBuf = ""
+				}
+				return
+			}
+
+			safeLen := len(textBuf) - (maxStopLen - 1)
+			if safeLen <= 0 {
+				return
+			}
+			emitTextDelta(textBuf[:safeLen])
+			textBuf = textBuf[safeLen:]
+		}
+	}
+
+	flushAllTextBuf := func() {
+		if textBuf == "" || stopTriggered {
+			textBuf = ""
+			return
+		}
+		// 这里的 textBuf 仅是“可能构成 stop sequence 的尾巴”，流结束/切换块时应直接输出。
+		if maxChars > 0 && outputChars+len(textBuf) > maxChars {
+			allowed := maxChars - outputChars
+			if allowed > 0 {
+				emitTextDelta(textBuf[:allowed])
+			}
+			textBuf = ""
+			stopReason = "max_tokens"
+			stopSequence = nil
+			stopTriggered = true
+			if cancel != nil {
+				cancel()
+			}
+			return
+		}
+		emitTextDelta(textBuf)
+		textBuf = ""
+	}
+
 	flushToolCalls := func() {
 		for {
 			select {
 			case call := <-toolCallChan:
+				if stopTriggered {
+					continue
+				}
+				if disableParallelToolUse && hasToolUse {
+					continue
+				}
 				callID, name, args, ok := claudeToolUseStreamPayloadFromCall(call, lastToolArgs)
 				if !ok {
 					continue
 				}
+				flushAllTextBuf()
 				closeTextBlock()
 				writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
 					"type":  "content_block_start",
@@ -400,6 +625,7 @@ func (h *claudeCompatHandler) writeMessagesStream(
 				})
 				blockIndex++
 				hasToolUse = true
+				outputChars += len(args)
 				emittedContentBlock = true
 			default:
 				return
@@ -417,9 +643,13 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		if msg == nil {
 			continue
 		}
-		emitText(msg.Content)
+		emitTextSafe(msg.Content)
+		if stopTriggered {
+			break
+		}
 	}
 
+	flushAllTextBuf()
 	closeTextBlock()
 	if !emittedContentBlock {
 		writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
@@ -435,17 +665,20 @@ func (h *claudeCompatHandler) writeMessagesStream(
 			"index": blockIndex,
 		})
 	}
-	stopReason := "end_turn"
 	if hasToolUse {
 		stopReason = "tool_use"
+		stopSequence = nil
+	} else if stopReason == "" {
+		stopReason = "end_turn"
 	}
+	outputTokens := estimateClaudeTokensFromChars(outputChars)
 	writeClaudeSSEEvent(w, flusher, "message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   stopReason,
-			"stop_sequence": nil,
+			"stop_sequence": stopSequence,
 		},
-		"usage": claudeUsage{},
+		"usage": claudeMessageDeltaUsage{OutputTokens: outputTokens},
 	})
 	writeClaudeSSEEvent(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
 }
@@ -473,6 +706,31 @@ func estimateClaudeInputTokens(input []*schema.Message, tools []openaiapi.OpenAI
 			totalChars += len(paramsBytes)
 		}
 	}
+	return estimateClaudeTokensFromChars(totalChars)
+}
+
+func estimateClaudeOutputTokens(content []claudeContentBlock) int {
+	totalChars := 0
+	for _, block := range content {
+		switch strings.ToLower(strings.TrimSpace(block.Type)) {
+		case "", "text":
+			totalChars += len(block.Text)
+		case "tool_use":
+			totalChars += len(block.ID)
+			totalChars += len(block.Name)
+			if block.Input != nil {
+				if b, err := json.Marshal(block.Input); err == nil {
+					totalChars += len(b)
+				}
+			}
+		default:
+			continue
+		}
+	}
+	return estimateClaudeTokensFromChars(totalChars)
+}
+
+func estimateClaudeTokensFromChars(totalChars int) int {
 	tokens := totalChars / 4
 	if totalChars%4 != 0 {
 		tokens++
@@ -481,6 +739,102 @@ func estimateClaudeInputTokens(input []*schema.Message, tools []openaiapi.OpenAI
 		tokens = 1
 	}
 	return tokens
+}
+
+func normalizeClaudeStopSequences(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, s := range raw {
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func maxClaudeStopSequenceLen(stopSequences []string) int {
+	maxLen := 0
+	for _, s := range stopSequences {
+		if len(s) > maxLen {
+			maxLen = len(s)
+		}
+	}
+	return maxLen
+}
+
+func findFirstClaudeStopSequence(s string, stopSequences []string) (int, string, bool) {
+	if s == "" || len(stopSequences) == 0 {
+		return 0, "", false
+	}
+	bestIdx := -1
+	bestSeq := ""
+	for _, seq := range stopSequences {
+		if seq == "" {
+			continue
+		}
+		idx := strings.Index(s, seq)
+		if idx < 0 {
+			continue
+		}
+		if bestIdx < 0 || idx < bestIdx || (idx == bestIdx && len(seq) > len(bestSeq)) {
+			bestIdx = idx
+			bestSeq = seq
+		}
+	}
+	if bestIdx < 0 {
+		return 0, "", false
+	}
+	return bestIdx, bestSeq, true
+}
+
+func limitClaudeText(text string, stopSequences []string, maxTokens int) (string, string, *string) {
+	stopSequences = normalizeClaudeStopSequences(stopSequences)
+	if text == "" {
+		return "", "", nil
+	}
+
+	stopIdx, stopSeq, hasStop := findFirstClaudeStopSequence(text, stopSequences)
+	cut := len(text)
+	reason := ""
+	var seqPtr *string
+	if hasStop {
+		cut = stopIdx
+		reason = "stop_sequence"
+		stopSeqCopy := stopSeq
+		seqPtr = &stopSeqCopy
+	}
+
+	if maxTokens > 0 {
+		maxChars := maxTokens * 4
+		if maxChars < 0 {
+			maxChars = 0
+		}
+		if maxChars < cut {
+			cut = maxChars
+			reason = "max_tokens"
+			seqPtr = nil
+		}
+	}
+
+	if cut < 0 {
+		cut = 0
+	}
+	if cut > len(text) {
+		cut = len(text)
+	}
+	return text[:cut], reason, seqPtr
 }
 
 func writeClaudeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload any) {
@@ -741,7 +1095,7 @@ func claudeToolUseBlockFromCall(call *backend.ToolCall, lastArgs map[string]stri
 	if name == "" || callID == "" {
 		return claudeContentBlock{}, false
 	}
-	args, ok := toolCallArgumentsForStream(call, lastArgs)
+	args, ok := toolCallArgumentsForClaudeStream(call, lastArgs)
 	if !ok {
 		return claudeContentBlock{}, false
 	}
@@ -776,12 +1130,36 @@ func claudeToolUseStreamPayloadFromCall(call *backend.ToolCall, lastArgs map[str
 	if name == "" || callID == "" {
 		return "", "", "", false
 	}
-	args, ok := toolCallArgumentsForStream(call, lastArgs)
+	args, ok := toolCallArgumentsForClaudeStream(call, lastArgs)
 	if !ok {
 		return "", "", "", false
 	}
 	debugClaudeTaskToolCall(name, callID, args, call.Status)
 	return callID, name, args, true
+}
+
+func toolCallArgumentsForClaudeStream(call *backend.ToolCall, lastArgs map[string]string) (string, bool) {
+	if call == nil {
+		return "", false
+	}
+	// Claude Code CLI 对 tool_use 的参数校验较严格。
+	// 为了避免在参数尚未完成（in_progress）时提前触发执行，这里只在 completed 时发出。
+	if !strings.EqualFold(strings.TrimSpace(call.Status), "completed") {
+		return "", false
+	}
+
+	args, ok := toolCallArgumentsForStream(call, lastArgs)
+	if !ok {
+		return "", false
+	}
+
+	// Claude tool_use.input 期望是一个 JSON object；否则容易触发 “Invalid tool parameters”。
+	// 这里做最小校验，避免把不合法的 arguments 透传给 CLI。
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		return "", false
+	}
+	return args, true
 }
 
 func debugClaudeTaskToolSchema(tools []claudeTool) {
@@ -824,6 +1202,14 @@ func normalizeClaudeModel(model string) string {
 		return ""
 	}
 	lower := strings.ToLower(trimmed)
+	// Claude Code CLI 支持简写别名（例如 --model sonnet/opus/haiku）。
+	// 我们将其映射到内部可用的模型，确保 CLI 直接使用别名也能跑通。
+	switch lower {
+	case "sonnet", "opus":
+		return gptb2o.DefaultModelFullID
+	case "haiku":
+		return gptb2o.ModelNamespace + "gpt-5.1-codex-mini"
+	}
 	if strings.HasPrefix(lower, "claude-haiku") {
 		return gptb2o.ModelNamespace + "gpt-5.1-codex-mini"
 	}

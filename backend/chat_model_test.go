@@ -166,6 +166,28 @@ func TestBuildRequestPayload_ReasoningEffortUnsupportedPreserved(t *testing.T) {
 	require.Equal(t, "ultra", payload.Reasoning.Effort)
 }
 
+func TestBuildRequestPayload_SamplingParamsSerialized(t *testing.T) {
+	t.Helper()
+	temp := float32(0.7)
+	topP := float32(0.9)
+
+	m := newTestChatModel("")
+	m = m.WithTemperature(&temp).WithTopP(&topP)
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	require.InDelta(t, float64(0.7), raw["temperature"].(float64), 0.0001)
+	require.InDelta(t, float64(0.9), raw["top_p"].(float64), 0.0001)
+}
+
 func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 	body := strings.NewReader("" +
 		"data: {\"type\":\"response.web_search_call.in_progress\",\"item_id\":\"tool-1\"}\n\n" +

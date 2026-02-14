@@ -106,6 +106,18 @@ func (m *ChatModel) WithFunctionTools(tools []ToolDefinition) *ChatModel {
 	return &cloned
 }
 
+func (m *ChatModel) WithTemperature(v *float32) *ChatModel {
+	cloned := *m
+	cloned.config.Temperature = v
+	return &cloned
+}
+
+func (m *ChatModel) WithTopP(v *float32) *ChatModel {
+	cloned := *m
+	cloned.config.TopP = v
+	return &cloned
+}
+
 func (m *ChatModel) WithToolCallHandler(handler func(*ToolCall)) *ChatModel {
 	cloned := *m
 	cloned.toolCallHandler = handler

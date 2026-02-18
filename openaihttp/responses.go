@@ -97,7 +97,7 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 		if effort == "" {
 			effort = cfg.ReasoningEffort
 		}
-		tools := backend.ToolsFromOpenAITools(req.Tools)
+		tools := backend.EnsureWebSearchToolDefinition(backend.ToolsFromOpenAITools(req.Tools))
 
 		accessToken, accountID, err := cfg.AuthProvider(r.Context())
 		if err != nil {

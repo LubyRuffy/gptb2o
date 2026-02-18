@@ -119,6 +119,27 @@ func TestBuildRequestPayload_InstructionsAlwaysSerialized(t *testing.T) {
 	require.NotEmpty(t, raw["instructions"], "instructions 不能为空字符串")
 }
 
+func TestBuildRequestPayload_DefaultTools_AddWebSearch(t *testing.T) {
+	m := newTestChatModel("")
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+	require.Len(t, payload.Tools, 1)
+	require.Equal(t, "web_search", payload.Tools[0].Type)
+}
+
+func TestBuildRequestPayload_KeepExplicitNativeWebSearch(t *testing.T) {
+	m := newTestChatModel("")
+	m = m.WithNativeTools([]NativeTool{{Type: ToolTypeWebSearch}})
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+	require.Len(t, payload.Tools, 1)
+	require.Equal(t, "web_search", payload.Tools[0].Type)
+}
+
 func TestBuildRequestPayload_ReasoningEffortSerialized(t *testing.T) {
 	m := newTestChatModelWithReasoning("", "high")
 	input := []*schema.Message{

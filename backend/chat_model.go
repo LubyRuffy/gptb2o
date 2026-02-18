@@ -328,6 +328,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 	if len(m.functionTools) > 0 {
 		tools = append(tools, m.functionTools...)
 	}
+	tools = EnsureWebSearchToolDefinition(tools)
 
 	effort := normalizeReasoningEffort(m.config.ReasoningEffort)
 	var reasoning *requestReasoning

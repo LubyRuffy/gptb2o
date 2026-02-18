@@ -71,6 +71,94 @@ func TestChatCompletions_RejectUnsupportedModel(t *testing.T) {
 	require.Equal(t, "unsupported model", resp.Error.Message)
 }
 
+func TestChatCompletions_DefaultTools_AddWebSearch(t *testing.T) {
+	var gotTools []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		for _, tool := range payload.Tools {
+			gotTools = append(gotTools, tool.Type)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	t.Cleanup(backend.Close)
+
+	_, chatHandler, _, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "messages":[{"role":"user","content":"hi"}],
+  "stream":false
+}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	chatHandler(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "chat.completion", resp["object"])
+	require.Equal(t, []string{"web_search"}, gotTools)
+}
+
+func TestChatCompletions_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
+	var gotTools []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		for _, tool := range payload.Tools {
+			gotTools = append(gotTools, tool.Type)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	t.Cleanup(backend.Close)
+
+	_, chatHandler, _, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "messages":[{"role":"user","content":"hi"}],
+  "stream":false,
+  "tools":[{"type":"web_search"}]
+}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	chatHandler(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"web_search"}, gotTools)
+}
+
 func TestResponses_StreamTrue_OfficialSSE_NoDONE(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
@@ -217,6 +305,93 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 		responsesHandler(w, req)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
+}
+
+func TestResponses_DefaultTools_AddsWebSearch(t *testing.T) {
+	var gotTools []string
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+
+		for _, tool := range payload.Tools {
+			gotTools = append(gotTools, tool.Type)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Equal(t, []string{"web_search"}, gotTools)
+}
+
+func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
+	var gotTools []string
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+
+		for _, tool := range payload.Tools {
+			gotTools = append(gotTools, tool.Type)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":"hi",
+  "stream":false,
+  "tools":[{"type":"web_search"}]
+}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Equal(t, []string{"web_search"}, gotTools)
 }
 
 func TestResponses_CodexModel_DefaultInstructions_WhenUndefined(t *testing.T) {

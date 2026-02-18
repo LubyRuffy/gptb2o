@@ -62,3 +62,21 @@ func TestToolsFromOpenAITools_DropsCodeInterpreterOnlyRequest(t *testing.T) {
 	got := ToolsFromOpenAITools(tools)
 	require.Nil(t, got)
 }
+
+func TestEnsureWebSearchToolDefinition_AddsWebSearch(t *testing.T) {
+	tools := []ToolDefinition{
+		{Type: "function", Name: "Task"},
+	}
+	got := EnsureWebSearchToolDefinition(tools)
+	require.Len(t, got, 2)
+	require.Equal(t, "function", got[0].Type)
+	require.Equal(t, string(ToolTypeWebSearch), got[1].Type)
+}
+
+func TestEnsureWebSearchToolDefinition_NoDuplicateIfPresent(t *testing.T) {
+	tools := []ToolDefinition{
+		{Type: string(ToolTypeWebSearch)},
+	}
+	got := EnsureWebSearchToolDefinition(tools)
+	require.Equal(t, tools, got)
+}

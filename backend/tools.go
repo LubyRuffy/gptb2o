@@ -68,6 +68,16 @@ func RemoveToolTypeDefinitions(tools []ToolDefinition, toolType ToolType) ([]Too
 	return result, true
 }
 
+// EnsureWebSearchToolDefinition makes sure `tools` includes `web_search` and keeps original order otherwise.
+func EnsureWebSearchToolDefinition(tools []ToolDefinition) []ToolDefinition {
+	for _, tool := range tools {
+		if strings.EqualFold(strings.TrimSpace(tool.Type), string(ToolTypeWebSearch)) {
+			return tools
+		}
+	}
+	return append(tools, ToolDefinition{Type: string(ToolTypeWebSearch)})
+}
+
 // FormatNativeToolName 将内置工具名规范化为 "native.<name>"。
 func FormatNativeToolName(name string) string {
 	name = strings.TrimSpace(name)

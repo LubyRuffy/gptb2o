@@ -88,7 +88,7 @@ func TestChatCompletions_DefaultTools_AddWebSearch(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
-	})
+	}))
 	t.Cleanup(backend.Close)
 
 	_, chatHandler, _, err := openaihttp.Handlers(openaihttp.Config{
@@ -133,7 +133,7 @@ func TestChatCompletions_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
-	})
+	}))
 	t.Cleanup(backend.Close)
 
 	_, chatHandler, _, err := openaihttp.Handlers(openaihttp.Config{
@@ -327,7 +327,7 @@ func TestResponses_DefaultTools_AddsWebSearch(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
-	})
+	}))
 	t.Cleanup(backend.Close)
 
 	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
@@ -368,7 +368,7 @@ func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
-	})
+	}))
 	t.Cleanup(backend.Close)
 
 	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{

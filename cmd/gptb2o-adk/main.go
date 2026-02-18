@@ -11,6 +11,8 @@ import (
 	"github.com/LubyRuffy/gptb2o/backend"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -25,6 +27,7 @@ func main() {
 		originator      = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
 		instructions    = flag.String("instructions", backend.DefaultInstructions, "system instructions for the model")
 		reasoningEffort = flag.String("reasoning-effort", "", "reasoning effort forwarded to backend (e.g. low|medium|high)")
+		noTools         = flag.Bool("no-tools", false, "disable built-in tools (bash)")
 	)
 	flag.Parse()
 
@@ -51,11 +54,20 @@ func main() {
 		log.Fatalf("create model failed: %v", err)
 	}
 
-	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
+	agentCfg := &adk.ChatModelAgentConfig{
 		Name:        defaultAgentName,
 		Description: "A chat model agent that uses the gptb2o model to generate responses.",
 		Model:       m,
-	})
+	}
+	if !*noTools {
+		agentCfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: []tool.BaseTool{newBashTool()},
+			},
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(context.Background(), agentCfg)
 	if err != nil {
 		log.Fatalf("create agent failed: %v", err)
 	}

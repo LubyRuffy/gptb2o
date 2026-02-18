@@ -21,13 +21,14 @@ func TestReadBackendSSE_DeltaAndDone(t *testing.T) {
 		"data: [DONE]\n\n")
 
 	var deltas []string
-	content, err := readBackendSSE(context.Background(), body, func(delta string) error {
+	content, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error {
 		deltas = append(deltas, delta)
 		return nil
 	}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"hel", "lo"}, deltas)
 	require.Equal(t, "hello", content)
+	require.Empty(t, toolCalls)
 }
 
 func newTestChatModel(instructions string) *ChatModel {
@@ -188,7 +189,6 @@ func TestBuildRequestPayload_ReasoningEffortUnsupportedPreserved(t *testing.T) {
 }
 
 func TestBuildRequestPayload_SamplingParamsSerialized(t *testing.T) {
-	t.Helper()
 	temp := float32(0.7)
 	topP := float32(0.9)
 
@@ -215,7 +215,7 @@ func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -223,6 +223,8 @@ func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 	require.Equal(t, "tool-1", calls[0].ID)
 	require.Equal(t, "native.web_search", calls[0].Name)
 	require.Equal(t, "in_progress", calls[0].Status)
+	// web_search 是 native 工具，不应出现在返回的函数调用列表中
+	require.Empty(t, toolCalls)
 }
 
 func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.T) {
@@ -234,7 +236,7 @@ func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -257,6 +259,14 @@ func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.
 	require.Equal(t, "desc", args["description"])
 	require.Equal(t, "do it", args["prompt"])
 	require.Equal(t, "code-simplifier", args["subagent_type"])
+
+	// 验证返回值中也包含该完整调用
+	require.Len(t, toolCalls, 1)
+	require.Equal(t, "call_1", toolCalls[0].ID)
+	require.Equal(t, "Task", toolCalls[0].Name)
+	var retArgs map[string]any
+	require.NoError(t, json.Unmarshal([]byte(toolCalls[0].Arguments), &retArgs))
+	require.Equal(t, "desc", retArgs["description"])
 }
 
 func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing.T) {
@@ -266,7 +276,7 @@ func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -288,6 +298,105 @@ func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing
 	require.Equal(t, "desc", args["description"])
 	require.Equal(t, "do it", args["prompt"])
 	require.Equal(t, "code-simplifier", args["subagent_type"])
+
+	// 验证返回值中包含完整的函数调用
+	require.Len(t, toolCalls, 1)
+	require.Equal(t, "call_2", toolCalls[0].ID)
+	require.Equal(t, "Task", toolCalls[0].Name)
+}
+
+func TestGenerate_ReturnsFunctionCallToolCalls(t *testing.T) {
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			`data: {"type":"response.output_item.added","item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"search","arguments":"","status":"in_progress"}}`,
+			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"{\"q\":\"go"}`,
+			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"lang\"}"}`,
+			`data: {"type":"response.function_call_arguments.done","item_id":"fc_a"}`,
+			`data: [DONE]`,
+		}
+		for _, e := range events {
+			fmt.Fprintln(w, e)
+			fmt.Fprintln(w)
+		}
+	}))
+	defer backendSrv.Close()
+
+	m, err := NewChatModel(ChatModelConfig{
+		Model:       "gpt-5.3-codex",
+		BackendURL:  backendSrv.URL,
+		AccessToken: "token",
+		HTTPClient:  backendSrv.Client(),
+		Originator:  "test",
+	})
+	require.NoError(t, err)
+	m = m.WithFunctionTools([]ToolDefinition{{Type: "function", Name: "search", Description: "搜索"}})
+
+	msg, err := m.Generate(context.Background(), []*schema.Message{
+		{Role: schema.User, Content: "搜一下golang"},
+	})
+	require.NoError(t, err)
+	require.Len(t, msg.ToolCalls, 1)
+	require.Equal(t, "call_a", msg.ToolCalls[0].ID)
+	require.Equal(t, "search", msg.ToolCalls[0].Function.Name)
+	require.Equal(t, "function", msg.ToolCalls[0].Type)
+
+	var args map[string]any
+	require.NoError(t, json.Unmarshal([]byte(msg.ToolCalls[0].Function.Arguments), &args))
+	require.Equal(t, "golang", args["q"])
+}
+
+func TestStream_EmitsFunctionCallToolCalls(t *testing.T) {
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			`data: {"type":"response.output_text.delta","delta":"好的"}`,
+			`data: {"type":"response.output_item.added","item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"calc","arguments":"","status":"in_progress"}}`,
+			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_b","delta":"{\"x\":1}"}`,
+			`data: {"type":"response.function_call_arguments.done","item_id":"fc_b"}`,
+			`data: [DONE]`,
+		}
+		for _, e := range events {
+			fmt.Fprintln(w, e)
+			fmt.Fprintln(w)
+		}
+	}))
+	defer backendSrv.Close()
+
+	m, err := NewChatModel(ChatModelConfig{
+		Model:       "gpt-5.3-codex",
+		BackendURL:  backendSrv.URL,
+		AccessToken: "token",
+		HTTPClient:  backendSrv.Client(),
+		Originator:  "test",
+	})
+	require.NoError(t, err)
+
+	sr, err := m.Stream(context.Background(), []*schema.Message{
+		{Role: schema.User, Content: "算一下"},
+	})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var textContent strings.Builder
+	var toolCallMsgs []*schema.Message
+	for {
+		msg, err := sr.Recv()
+		if err != nil {
+			break
+		}
+		if msg.Content != "" {
+			textContent.WriteString(msg.Content)
+		}
+		if len(msg.ToolCalls) > 0 {
+			toolCallMsgs = append(toolCallMsgs, msg)
+		}
+	}
+
+	require.Equal(t, "好的", textContent.String())
+	require.Len(t, toolCallMsgs, 1)
+	require.Equal(t, "call_b", toolCallMsgs[0].ToolCalls[0].ID)
+	require.Equal(t, "calc", toolCallMsgs[0].ToolCalls[0].Function.Name)
 }
 
 func TestDoStreamRequest_RetryWithoutCodeInterpreter(t *testing.T) {

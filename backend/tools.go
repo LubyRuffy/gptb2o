@@ -1,9 +1,11 @@
 package backend
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/LubyRuffy/gptb2o/openaiapi"
+	"github.com/cloudwego/eino/schema"
 )
 
 type ToolType string
@@ -112,16 +114,10 @@ func NativeToolsFromOpenAITools(tools []openaiapi.OpenAITool) []NativeTool {
 		switch strings.ToLower(strings.TrimSpace(tool.Type)) {
 		case string(ToolTypeWebSearch):
 			addNative(NativeTool{Type: ToolTypeWebSearch})
-			continue
-		}
-
-		if strings.ToLower(strings.TrimSpace(tool.Type)) != "function" {
-			continue
-		}
-		name := strings.ToLower(strings.TrimSpace(tool.Function.Name))
-		switch name {
-		case "web_search":
-			addNative(NativeTool{Type: ToolTypeWebSearch})
+		case "function":
+			if strings.ToLower(strings.TrimSpace(tool.Function.Name)) == "web_search" {
+				addNative(NativeTool{Type: ToolTypeWebSearch})
+			}
 		}
 	}
 
@@ -167,6 +163,67 @@ func FunctionToolsFromOpenAITools(tools []openaiapi.OpenAITool) []ToolDefinition
 		return nil
 	}
 	return result
+}
+
+// ToolInfosToFunctionDefinitions 将 eino schema.ToolInfo 列表转换为 backend function ToolDefinition 列表。
+// 与原生内置工具（web_search、python_runner）重名的条目会被跳过，以避免冲突。
+func ToolInfosToFunctionDefinitions(tools []*schema.ToolInfo) []ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	result := make([]ToolDefinition, 0, len(tools))
+	nameSet := make(map[string]struct{})
+
+	for _, info := range tools {
+		if info == nil {
+			continue
+		}
+		name := strings.TrimSpace(info.Name)
+		if name == "" {
+			continue
+		}
+		normalized := strings.ToLower(name)
+		switch normalized {
+		case "web_search", "python_runner":
+			continue
+		}
+		if _, exists := nameSet[normalized]; exists {
+			continue
+		}
+		nameSet[normalized] = struct{}{}
+
+		result = append(result, ToolDefinition{
+			Type:        "function",
+			Name:        name,
+			Description: info.Desc,
+			Parameters:  toolInfoParams(info),
+		})
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func toolInfoParams(info *schema.ToolInfo) map[string]interface{} {
+	if info.ParamsOneOf == nil {
+		return nil
+	}
+	js, err := info.ToJSONSchema()
+	if err != nil || js == nil {
+		return nil
+	}
+	b, err := json.Marshal(js)
+	if err != nil {
+		return nil
+	}
+	var params map[string]interface{}
+	if err := json.Unmarshal(b, &params); err != nil {
+		return nil
+	}
+	return params
 }
 
 // ToolsFromOpenAITools 把 OpenAI tools 映射为 backend 的 tools 数组（原生 + function 扁平化）。

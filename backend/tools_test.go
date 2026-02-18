@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/LubyRuffy/gptb2o/openaiapi"
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,4 +106,74 @@ func TestEnsureWebSearchToolDefinition_NoDuplicateIfPresent(t *testing.T) {
 	}
 	got := EnsureWebSearchToolDefinition(tools)
 	require.Equal(t, tools, got)
+}
+
+func TestToolInfosToFunctionDefinitions_Basic(t *testing.T) {
+	tools := []*schema.ToolInfo{
+		{
+			Name: "bash",
+			Desc: "execute bash command",
+			ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+				"command": {Type: schema.String, Desc: "shell command", Required: true},
+			}),
+		},
+	}
+	defs := ToolInfosToFunctionDefinitions(tools)
+	require.Len(t, defs, 1)
+	require.Equal(t, "function", defs[0].Type)
+	require.Equal(t, "bash", defs[0].Name)
+	require.Equal(t, "execute bash command", defs[0].Description)
+	require.NotNil(t, defs[0].Parameters)
+}
+
+func TestToolInfosToFunctionDefinitions_SkipsBuiltins(t *testing.T) {
+	tools := []*schema.ToolInfo{
+		{Name: "web_search"},
+		{Name: "python_runner"},
+		{Name: "my_tool", Desc: "custom"},
+	}
+	defs := ToolInfosToFunctionDefinitions(tools)
+	require.Len(t, defs, 1)
+	require.Equal(t, "my_tool", defs[0].Name)
+}
+
+func TestToolInfosToFunctionDefinitions_Dedup(t *testing.T) {
+	tools := []*schema.ToolInfo{
+		{Name: "calc", Desc: "v1"},
+		{Name: "Calc", Desc: "v2"},
+	}
+	defs := ToolInfosToFunctionDefinitions(tools)
+	require.Len(t, defs, 1)
+	require.Equal(t, "calc", defs[0].Name)
+}
+
+func TestToolInfosToFunctionDefinitions_Empty(t *testing.T) {
+	require.Nil(t, ToolInfosToFunctionDefinitions(nil))
+	require.Nil(t, ToolInfosToFunctionDefinitions([]*schema.ToolInfo{}))
+}
+
+func TestBuildRequestPayload_WithToolsIncludesFunctionDefs(t *testing.T) {
+	m := newTestChatModel("")
+	m.tools = []*schema.ToolInfo{
+		{
+			Name: "bash",
+			Desc: "run shell",
+			ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+				"command": {Type: schema.String, Desc: "command", Required: true},
+			}),
+		},
+	}
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+
+	var found bool
+	for _, tool := range payload.Tools {
+		if tool.Type == "function" && tool.Name == "bash" {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "bash function tool 应出现在请求 payload 的 tools 中")
 }

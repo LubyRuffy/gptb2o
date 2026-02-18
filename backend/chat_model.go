@@ -63,18 +63,18 @@ func NewChatModel(config ChatModelConfig) (*ChatModel, error) {
 }
 
 func (m *ChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einoModel.Option) (*schema.Message, error) {
-	content, err := m.doStreamRequest(ctx, input, func(string) error { return nil })
+	content, toolCalls, err := m.doStreamRequest(ctx, input, func(string) error { return nil })
 	if err != nil {
 		return nil, err
 	}
-	return schema.AssistantMessage(content, nil), nil
+	return schema.AssistantMessage(content, toSchemaToolCalls(toolCalls)), nil
 }
 
 func (m *ChatModel) Stream(ctx context.Context, input []*schema.Message, _ ...einoModel.Option) (*schema.StreamReader[*schema.Message], error) {
 	sr, sw := schema.Pipe[*schema.Message](64)
 	go func() {
 		defer sw.Close()
-		_, err := m.doStreamRequest(ctx, input, func(delta string) error {
+		_, toolCalls, err := m.doStreamRequest(ctx, input, func(delta string) error {
 			if delta == "" {
 				return nil
 			}
@@ -83,6 +83,13 @@ func (m *ChatModel) Stream(ctx context.Context, input []*schema.Message, _ ...ei
 		})
 		if err != nil {
 			sw.Send(nil, err)
+			return
+		}
+		if calls := toSchemaToolCalls(toolCalls); len(calls) > 0 {
+			sw.Send(&schema.Message{
+				Role:      schema.Assistant,
+				ToolCalls: calls,
+			}, nil)
 		}
 	}()
 	return sr, nil
@@ -124,19 +131,19 @@ func (m *ChatModel) WithToolCallHandler(handler func(*ToolCall)) *ChatModel {
 	return &cloned
 }
 
-func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message, onDelta func(string) error) (string, error) {
+func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message, onDelta func(string) error) (string, []*ToolCall, error) {
 	payload, err := m.buildRequestPayload(input)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	currentPayload := payload
 	retriedWithoutCodeInterpreter := false
 	retriedReasoningEffort := false
 	for {
-		content, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
+		content, toolCalls, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
 		if err == nil {
-			return content, nil
+			return content, toolCalls, nil
 		}
 
 		var statusErr *backendRequestStatusError
@@ -161,7 +168,7 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 				continue
 			}
 		}
-		return "", err
+		return "", nil, err
 	}
 }
 
@@ -180,15 +187,15 @@ func (e *backendRequestStatusError) Error() string {
 	return fmt.Sprintf("backend request failed with status %d: %s", e.status, strings.TrimSpace(e.message))
 }
 
-func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPayload, onDelta func(string) error) (string, error) {
+func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPayload, onDelta func(string) error) (string, []*ToolCall, error) {
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to encode backend request: %w", err)
+		return "", nil, fmt.Errorf("failed to encode backend request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.config.BackendURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("failed to build backend request: %w", err)
+		return "", nil, fmt.Errorf("failed to build backend request: %w", err)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.config.AccessToken))
@@ -202,20 +209,20 @@ func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPay
 
 	resp, err := m.config.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("backend request failed: %w", err)
+		return "", nil, fmt.Errorf("backend request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return "", &backendRequestStatusError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
+		return "", nil, &backendRequestStatusError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
 	}
 
-	content, err := readBackendSSE(ctx, resp.Body, onDelta, m.toolCallHandler)
+	content, toolCalls, err := readBackendSSE(ctx, resp.Body, onDelta, m.toolCallHandler)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return content, nil
+	return content, toolCalls, nil
 }
 
 type requestItem struct {
@@ -316,7 +323,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 		instructions = DefaultInstructions
 	}
 
-	tools := make([]ToolDefinition, 0, len(m.nativeTools)+len(m.functionTools))
+	tools := make([]ToolDefinition, 0, len(m.nativeTools)+len(m.functionTools)+len(m.tools))
 	if len(m.nativeTools) > 0 {
 		for _, tool := range m.nativeTools {
 			tools = append(tools, ToolDefinition{
@@ -328,9 +335,22 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 	if len(m.functionTools) > 0 {
 		tools = append(tools, m.functionTools...)
 	}
+	// m.tools 由 eino 框架通过 WithTools 注入（例如 react agent 注册的工具），
+	// 需要转换为 function 类型的 ToolDefinition 并去重后合并。
+	if len(m.tools) > 0 {
+		existingNames := make(map[string]struct{}, len(tools))
+		for _, t := range tools {
+			existingNames[strings.ToLower(strings.TrimSpace(t.Name))] = struct{}{}
+		}
+		for _, def := range ToolInfosToFunctionDefinitions(m.tools) {
+			if _, exists := existingNames[strings.ToLower(strings.TrimSpace(def.Name))]; !exists {
+				tools = append(tools, def)
+			}
+		}
+	}
 	tools = EnsureWebSearchToolDefinition(tools)
 
-	effort := normalizeReasoningEffort(m.config.ReasoningEffort)
+	effort := NormalizeReasoningEffort(m.config.ReasoningEffort)
 	var reasoning *requestReasoning
 	if effort != "" {
 		reasoning = &requestReasoning{Effort: effort}
@@ -347,10 +367,6 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 		Temperature:  m.config.Temperature,
 		TopP:         m.config.TopP,
 	}, nil
-}
-
-func normalizeReasoningEffort(s string) string {
-	return NormalizeReasoningEffort(s)
 }
 
 func resolveMessageContent(msg *schema.Message) string {
@@ -381,17 +397,64 @@ func looksLikeCallID(value string) bool {
 	if strings.ContainsAny(trimmed, " \t\r\n") {
 		return false
 	}
-	switch {
-	case strings.HasPrefix(trimmed, "call_"):
-		return true
-	case strings.HasPrefix(trimmed, "fc_"):
-		return true
-	default:
-		return false
-	}
+	return strings.HasPrefix(trimmed, "call_") || strings.HasPrefix(trimmed, "fc_")
 }
 
-func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) error, onToolCall func(*ToolCall)) (string, error) {
+// collectFunctionCallResults 从已积累的 functionCallState 中提取所有完成的函数调用。
+// 仅收集 function_call 类型（不含 native 工具）。
+func collectFunctionCallResults(fc *functionCallState) []*ToolCall {
+	if fc == nil || len(fc.itemMeta) == 0 {
+		return nil
+	}
+	result := make([]*ToolCall, 0, len(fc.itemMeta))
+	for itemID, meta := range fc.itemMeta {
+		name := strings.TrimSpace(meta.Name)
+		if name == "" {
+			continue
+		}
+		callID := strings.TrimSpace(meta.CallID)
+		if callID == "" {
+			callID = itemID
+		}
+		result = append(result, &ToolCall{
+			ID:        callID,
+			Name:      name,
+			Arguments: strings.TrimSpace(fc.args[itemID]),
+			Status:    "completed",
+		})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// toSchemaToolCalls 将 backend ToolCall 列表转换为 eino schema.ToolCall 列表。
+func toSchemaToolCalls(calls []*ToolCall) []schema.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		out = append(out, schema.ToolCall{
+			ID:   call.ID,
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      call.Name,
+				Arguments: call.Arguments,
+			},
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) error, onToolCall func(*ToolCall)) (string, []*ToolCall, error) {
 	reader := bufio.NewReader(body)
 	var dataLines []string
 	var fullContent strings.Builder
@@ -400,7 +463,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 
 	for {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", nil, ctx.Err()
 		}
 
 		line, err := reader.ReadString('\n')
@@ -409,14 +472,14 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 				if len(dataLines) > 0 {
 					if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
 						if errors.Is(err, errStreamDone) {
-							return fullContent.String(), nil
+							return fullContent.String(), collectFunctionCallResults(functionCalls), nil
 						}
-						return "", err
+						return "", nil, err
 					}
 				}
-				return fullContent.String(), nil
+				return fullContent.String(), collectFunctionCallResults(functionCalls), nil
 			}
-			return "", err
+			return "", nil, err
 		}
 
 		line = strings.TrimRight(line, "\r\n")
@@ -426,9 +489,9 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 			}
 			if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
 				if errors.Is(err, errStreamDone) {
-					return fullContent.String(), nil
+					return fullContent.String(), collectFunctionCallResults(functionCalls), nil
 				}
-				return "", err
+				return "", nil, err
 			}
 			dataLines = dataLines[:0]
 			continue
@@ -437,7 +500,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				return fullContent.String(), nil
+				return fullContent.String(), collectFunctionCallResults(functionCalls), nil
 			}
 			if data != "" {
 				dataLines = append(dataLines, data)
@@ -477,8 +540,10 @@ func handleBackendEvent(
 	}
 
 	eventType, _ := raw["type"].(string)
+	// 无论是否有外部回调，都需要调用 extractToolCalls 以维护内部 functionCallState 状态。
+	extractedCalls := extractToolCalls(eventType, raw, functionCalls)
 	if onToolCall != nil {
-		for _, toolCall := range extractToolCalls(eventType, raw, functionCalls) {
+		for _, toolCall := range extractedCalls {
 			if toolCall == nil {
 				continue
 			}

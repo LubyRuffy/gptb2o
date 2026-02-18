@@ -14,7 +14,7 @@ const (
 	LegacyModelNamespace = "opencode/codex/"
 
 	// DefaultModelID 是对外默认推荐/选中的模型 ID（不带命名空间）。
-	DefaultModelID = "gpt-5.3-codex"
+	DefaultModelID = "gpt-5.3-codex-spark"
 	// DefaultModelFullID 是对外默认推荐/选中的模型 ID（带 ModelNamespace）。
 	DefaultModelFullID = ModelNamespace + DefaultModelID
 )

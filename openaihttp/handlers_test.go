@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/LubyRuffy/gptb2o"
+	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
 	"github.com/LubyRuffy/gptb2o/openaihttp"
 	"github.com/stretchr/testify/require"
@@ -392,6 +393,53 @@ func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	require.Equal(t, []string{"web_search"}, gotTools)
+}
+
+func TestResponses_PassesThroughCustomFunctionTools(t *testing.T) {
+	var gotTools []backend.ToolDefinition
+
+		backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer r.Body.Close()
+
+		var payload struct {
+			Tools []backend.ToolDefinition `json:"tools"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		gotTools = append(gotTools, payload.Tools...)
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		t.Cleanup(backendServer.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backendServer.URL,
+		HTTPClient:   backendServer.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":"hi",
+  "stream":false,
+  "tools":[
+    {"type":"function","function":{"name":"Task","description":"run task","parameters":{"type":"object","properties":{"id":{"type":"string"}}}}},
+    {"type":"code_interpreter"}
+  ]
+}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, gotTools, 2)
+	require.Equal(t, "function", gotTools[0].Type)
+	require.Equal(t, "Task", gotTools[0].Name)
+	require.Equal(t, string(backend.ToolTypeWebSearch), gotTools[1].Type)
 }
 
 func TestResponses_CodexModel_DefaultInstructions_WhenUndefined(t *testing.T) {

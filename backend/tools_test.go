@@ -63,6 +63,32 @@ func TestToolsFromOpenAITools_DropsCodeInterpreterOnlyRequest(t *testing.T) {
 	require.Nil(t, got)
 }
 
+func TestToolsFromOpenAITools_KeepCustomFunctionToolsAndBuiltinWebSearch(t *testing.T) {
+	tools := []openaiapi.OpenAITool{
+		{
+			Type: "function",
+			Function: openaiapi.OpenAIToolFunction{
+				Name:        "Task",
+				Description: "run task",
+				Parameters:  map[string]interface{}{"type": "object"},
+			},
+		},
+		{
+			Type: "function",
+			Function: openaiapi.OpenAIToolFunction{
+				Name: "web_search",
+			},
+		},
+		{Type: "code_interpreter"},
+	}
+
+	got := ToolsFromOpenAITools(tools)
+	require.Len(t, got, 2)
+	require.Equal(t, string(ToolTypeWebSearch), got[0].Type)
+	require.Equal(t, "function", got[1].Type)
+	require.Equal(t, "Task", got[1].Name)
+}
+
 func TestEnsureWebSearchToolDefinition_AddsWebSearch(t *testing.T) {
 	tools := []ToolDefinition{
 		{Type: "function", Name: "Task"},

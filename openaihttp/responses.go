@@ -97,7 +97,8 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 		if effort == "" {
 			effort = cfg.ReasoningEffort
 		}
-		tools := backend.EnsureWebSearchToolDefinition(backend.ToolsFromOpenAITools(req.Tools))
+	tools := backend.EnsureWebSearchToolDefinition(backend.ToolsFromOpenAITools(req.Tools))
+	tools, _ = backend.RemoveToolTypeDefinitions(tools, backend.ToolTypeCodeInterpreter)
 
 		accessToken, accountID, err := cfg.AuthProvider(r.Context())
 		if err != nil {
@@ -153,7 +154,6 @@ func doBackendResponsesRequest(
 	payload backendResponsesPayload,
 ) (*http.Response, error) {
 	currentPayload := payload
-	retriedWithoutCodeInterpreter := false
 	retriedReasoningEffort := false
 
 	for {
@@ -188,16 +188,6 @@ func doBackendResponsesRequest(
 		_ = resp.Body.Close()
 		message := strings.TrimSpace(string(body))
 
-		if !retriedWithoutCodeInterpreter && resp.StatusCode == http.StatusBadRequest &&
-			backend.IsUnsupportedToolTypeError(message, backend.ToolTypeCodeInterpreter) {
-			filteredTools, removed := backend.RemoveToolTypeDefinitions(currentPayload.Tools, backend.ToolTypeCodeInterpreter)
-			if removed {
-				log.Printf("[gptb2o][responses] backend rejected code_interpreter, retry without it: status=%d message=%q", resp.StatusCode, compactLogMessage(message))
-				currentPayload.Tools = filteredTools
-				retriedWithoutCodeInterpreter = true
-				continue
-			}
-		}
 		if !retriedReasoningEffort && resp.StatusCode == http.StatusBadRequest && currentPayload.Reasoning != nil {
 			currentEffort := strings.TrimSpace(currentPayload.Reasoning.Effort)
 			if fallbackEffort, ok := backend.FallbackReasoningEffort(currentEffort); ok &&

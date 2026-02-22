@@ -235,6 +235,11 @@ type requestItem struct {
 	Output    string `json:"output,omitempty"`
 }
 
+const (
+	emptyToolOutputPlaceholder   = "__EMPTY_TOOL_OUTPUT__"
+	missingToolOutputPlaceholder = "__MISSING_TOOL_OUTPUT_AUTO_INJECTED__"
+)
+
 type requestPayload struct {
 	Model        string            `json:"model"`
 	Input        []requestItem     `json:"input"`
@@ -260,7 +265,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 			continue
 		}
 		if msg.Role == schema.Tool {
-			if msg.ToolCallID == "" || msg.Content == "" {
+			if msg.ToolCallID == "" {
 				continue
 			}
 			callID := strings.TrimSpace(msg.ToolCallID)
@@ -270,6 +275,9 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 			}
 			if callID == "" {
 				continue
+			}
+			if strings.TrimSpace(output) == "" {
+				output = emptyToolOutputPlaceholder
 			}
 			items = append(items, requestItem{
 				Type:   "function_call_output",
@@ -317,6 +325,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 	if len(items) == 0 {
 		return nil, fmt.Errorf("no valid messages to send")
 	}
+	items = ensureFunctionCallOutputs(items)
 
 	// 后端 API 要求 instructions 不能为空，若未指定则使用默认值
 	if instructions == "" {
@@ -398,6 +407,55 @@ func looksLikeCallID(value string) bool {
 		return false
 	}
 	return strings.HasPrefix(trimmed, "call_") || strings.HasPrefix(trimmed, "fc_")
+}
+
+func ensureFunctionCallOutputs(items []requestItem) []requestItem {
+	if len(items) == 0 {
+		return items
+	}
+
+	functionCalls := make([]string, 0, 8)
+	seenFunctionCalls := make(map[string]struct{}, 8)
+	outputs := make(map[string]struct{}, 8)
+
+	for _, item := range items {
+		callID := strings.TrimSpace(item.CallID)
+		if callID == "" {
+			continue
+		}
+		switch item.Type {
+		case "function_call":
+			if _, exists := seenFunctionCalls[callID]; exists {
+				continue
+			}
+			seenFunctionCalls[callID] = struct{}{}
+			functionCalls = append(functionCalls, callID)
+		case "function_call_output":
+			outputs[callID] = struct{}{}
+		}
+	}
+
+	if len(functionCalls) == 0 {
+		return items
+	}
+
+	appended := false
+	for _, callID := range functionCalls {
+		if _, ok := outputs[callID]; ok {
+			continue
+		}
+		items = append(items, requestItem{
+			Type:   "function_call_output",
+			CallID: callID,
+			Output: missingToolOutputPlaceholder,
+		})
+		appended = true
+	}
+
+	if appended {
+		return items
+	}
+	return items
 }
 
 // collectFunctionCallResults 从已积累的 functionCallState 中提取所有完成的函数调用。

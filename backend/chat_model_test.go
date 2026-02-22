@@ -130,6 +130,73 @@ func TestBuildRequestPayload_DefaultTools_AddWebSearch(t *testing.T) {
 	require.Equal(t, "web_search", payload.Tools[0].Type)
 }
 
+func TestBuildRequestPayload_EmptyToolOutputStillSerialized(t *testing.T) {
+	m := newTestChatModel("")
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "执行任务"},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{
+					ID:   "call_empty",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "glob",
+						Arguments: `{"pattern":"*.json"}`,
+					},
+				},
+			},
+		},
+		{
+			Role:       schema.Tool,
+			ToolCallID: "call_empty",
+			Content:    "",
+		},
+	})
+	require.NoError(t, err)
+
+	foundOutput := false
+	for _, item := range payload.Input {
+		if item.Type != "function_call_output" || item.CallID != "call_empty" {
+			continue
+		}
+		foundOutput = true
+		require.Equal(t, emptyToolOutputPlaceholder, item.Output)
+	}
+	require.True(t, foundOutput, "空工具输出也必须序列化为 function_call_output")
+}
+
+func TestBuildRequestPayload_AutoInjectMissingToolOutput(t *testing.T) {
+	m := newTestChatModel("")
+	payload, err := m.buildRequestPayload([]*schema.Message{
+		{Role: schema.User, Content: "执行任务"},
+		{
+			Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{
+				{
+					ID:   "call_missing",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "glob",
+						Arguments: `{"pattern":"*.json"}`,
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	foundOutput := false
+	for _, item := range payload.Input {
+		if item.Type != "function_call_output" || item.CallID != "call_missing" {
+			continue
+		}
+		foundOutput = true
+		require.Equal(t, missingToolOutputPlaceholder, item.Output)
+	}
+	require.True(t, foundOutput, "缺失工具输出时应自动补齐 function_call_output")
+}
+
 func TestBuildRequestPayload_KeepExplicitNativeWebSearch(t *testing.T) {
 	m := newTestChatModel("")
 	m = m.WithNativeTools([]NativeTool{{Type: ToolTypeWebSearch}})

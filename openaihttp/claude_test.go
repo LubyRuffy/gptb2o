@@ -7,11 +7,35 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/LubyRuffy/gptb2o"
+=======
+	"testing"
+	"time"
+
+>>>>>>> theirs
+=======
+	"testing"
+	"time"
+
+>>>>>>> theirs
+=======
+	"testing"
+	"time"
+
+>>>>>>> theirs
+=======
+	"testing"
+	"time"
+
+>>>>>>> theirs
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
 	einoModel "github.com/cloudwego/eino/components/model"
@@ -22,6 +46,10 @@ import (
 type stubChatModel struct {
 	generateResp *schema.Message
 	generateErr  error
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	generateHook func(input []*schema.Message)
 	streamMsgs   []*schema.Message
 	streamErr    error
@@ -32,19 +60,59 @@ func (s *stubChatModel) Generate(ctx context.Context, input []*schema.Message, o
 	if s.generateHook != nil {
 		s.generateHook(input)
 	}
+=======
+=======
+>>>>>>> theirs
+	streamMsgs   []*schema.Message
+	streamErr    error
+}
+
+func (s *stubChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einoModel.Option) (*schema.Message, error) {
+<<<<<<< ours
+>>>>>>> theirs
+=======
+=======
+>>>>>>> theirs
+	streamMsgs   []*schema.Message
+	streamErr    error
+}
+
+func (s *stubChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einoModel.Option) (*schema.Message, error) {
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	return s.generateResp, s.generateErr
 }
 
 func (s *stubChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einoModel.Option) (*schema.StreamReader[*schema.Message], error) {
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	if s.streamHook != nil {
 		s.streamHook(input)
 	}
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if s.streamErr != nil {
 		return nil, s.streamErr
 	}
 	return schema.StreamReaderFromArray(s.streamMsgs), nil
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 type claudeSSEEvent struct {
 	Name string
 	Data map[string]any
@@ -202,6 +270,14 @@ func stringValue(v any) string {
 	return s
 }
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	h, err := newClaudeCompatHandler(claudeCompatConfig{
 		Now: time.Now,
@@ -228,8 +304,24 @@ func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "text", resp.Content[0].Type)
 	require.Equal(t, "pong", resp.Content[0].Text)
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	require.NotNil(t, resp.StopReason)
 	require.Equal(t, "end_turn", *resp.StopReason)
+=======
+	require.Equal(t, "end_turn", resp.StopReason)
+>>>>>>> theirs
+=======
+	require.Equal(t, "end_turn", resp.StopReason)
+>>>>>>> theirs
+=======
+	require.Equal(t, "end_turn", resp.StopReason)
+>>>>>>> theirs
+=======
+	require.Equal(t, "end_turn", resp.StopReason)
+>>>>>>> theirs
 }
 
 func TestClaudeMessages_Stream_OK(t *testing.T) {
@@ -278,6 +370,10 @@ func TestClaudeMessages_BadRequest(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Contains(t, string(data), "model is required")
 }
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 
 func TestClaudeMessages_AnthropicHaikuAliasMappedToMini(t *testing.T) {
 	var gotModelID string
@@ -912,3 +1008,11 @@ func TestClaudeMessages_Stream_MaxTokens(t *testing.T) {
 	require.Equal(t, "abcd", gotText.String())
 	require.Equal(t, "max_tokens", stopReason)
 }
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs

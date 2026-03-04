@@ -58,6 +58,10 @@ go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex 
 - `POST /v1/responses`（官方推荐）
   - `stream=true`：输出官方 SSE（`event:` + `data:`），并且不透传 backend 的 `data: [DONE]`
   - `stream=false`：从 backend SSE 的 `response.completed.response` 提取最终 JSON 返回
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
   - 支持 `reasoning.effort` 透传（请求级）；若未传可用服务启动参数 `--reasoning-effort` 作为默认值
 - `POST /v1/messages`（Claude Code / Anthropic 官方路径）
   - 入参兼容 Claude Messages API 的 `model/messages/system/stream/max_tokens/tools`
@@ -117,6 +121,27 @@ curl http://127.0.0.1:12345/v1/messages \
 ```bash
 GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 ```
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+- `POST /v1/messages`（Claude Code / Anthropic 官方路径）
+  - 入参兼容 Claude Messages API 的 `model/messages/system/stream/max_tokens`
+  - `stream=true`：返回 Claude 风格 SSE（`message_start/content_block_delta/.../message_stop`）
+  - `stream=false`：返回 Claude 风格 `message` JSON
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 
 ## License
 

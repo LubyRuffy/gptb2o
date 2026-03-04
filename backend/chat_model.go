@@ -228,11 +228,22 @@ func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPay
 type requestItem struct {
 	Type      string `json:"type"`
 	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
+	Content   any    `json:"content,omitempty"`
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 	Output    string `json:"output,omitempty"`
+}
+
+type requestMessageContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	FileURL  string `json:"file_url,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	Filename string `json:"filename,omitempty"`
 }
 
 const (
@@ -298,7 +309,7 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 		}
 
 		content := resolveMessageContent(msg)
-		if content != "" {
+		if hasMessageContent(content) {
 			items = append(items, requestItem{
 				Type:    "message",
 				Role:    string(msg.Role),
@@ -378,20 +389,135 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 	}, nil
 }
 
-func resolveMessageContent(msg *schema.Message) string {
+func resolveMessageContent(msg *schema.Message) any {
 	if msg.Content != "" {
 		return msg.Content
 	}
 	if len(msg.UserInputMultiContent) > 0 {
-		var builder strings.Builder
+		parts := make([]requestMessageContentPart, 0, len(msg.UserInputMultiContent))
+		var textBuilder strings.Builder
+		hasNonTextPart := false
+
 		for _, part := range msg.UserInputMultiContent {
-			if part.Type == schema.ChatMessagePartTypeText {
-				builder.WriteString(part.Text)
+			switch part.Type {
+			case schema.ChatMessagePartTypeText:
+				if part.Text == "" {
+					continue
+				}
+				textBuilder.WriteString(part.Text)
+				parts = append(parts, requestMessageContentPart{
+					Type: "input_text",
+					Text: part.Text,
+				})
+			case schema.ChatMessagePartTypeImageURL:
+				if part.Image == nil {
+					continue
+				}
+				imageURL := readMessagePartURL(part.Image.MessagePartCommon, "image/png")
+				if imageURL == "" {
+					continue
+				}
+				partItem := requestMessageContentPart{
+					Type:     "input_image",
+					ImageURL: imageURL,
+				}
+				if detail := strings.TrimSpace(string(part.Image.Detail)); detail != "" {
+					partItem.Detail = detail
+				}
+				if mimeType := strings.TrimSpace(part.Image.MIMEType); mimeType != "" {
+					partItem.MIMEType = mimeType
+				}
+				parts = append(parts, partItem)
+				hasNonTextPart = true
+			case schema.ChatMessagePartTypeFileURL:
+				if part.File == nil {
+					continue
+				}
+				fileData := readMessagePartDataURL(part.File.MessagePartCommon)
+				fileURL := ""
+				if part.File.URL != nil {
+					rawURL := strings.TrimSpace(*part.File.URL)
+					if strings.HasPrefix(strings.ToLower(rawURL), "data:") {
+						fileData = rawURL
+					} else if fileData == "" {
+						fileURL = rawURL
+					}
+				}
+				if fileData == "" && fileURL == "" {
+					continue
+				}
+				partItem := requestMessageContentPart{
+					Type: "input_file",
+				}
+				if fileData != "" {
+					partItem.FileData = fileData
+				} else {
+					partItem.FileURL = fileURL
+				}
+				if mimeType := strings.TrimSpace(part.File.MIMEType); mimeType != "" {
+					partItem.MIMEType = mimeType
+				}
+				if filename := strings.TrimSpace(part.File.Name); filename != "" {
+					partItem.Filename = filename
+				}
+				parts = append(parts, partItem)
+				hasNonTextPart = true
 			}
 		}
-		return builder.String()
+		if len(parts) == 0 {
+			return ""
+		}
+		// 保持兼容：纯文本仍使用 string，避免影响已有依赖字符串 content 的链路。
+		if !hasNonTextPart {
+			return textBuilder.String()
+		}
+		return parts
 	}
 	return ""
+}
+
+func hasMessageContent(content any) bool {
+	switch v := content.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []requestMessageContentPart:
+		return len(v) > 0
+	default:
+		return true
+	}
+}
+
+func readMessagePartURL(part schema.MessagePartCommon, defaultMIMEType string) string {
+	if part.URL != nil {
+		if url := strings.TrimSpace(*part.URL); url != "" {
+			return url
+		}
+	}
+	return readMessagePartDataURLWithFallback(part, defaultMIMEType)
+}
+
+func readMessagePartDataURL(part schema.MessagePartCommon) string {
+	return readMessagePartDataURLWithFallback(part, "application/octet-stream")
+}
+
+func readMessagePartDataURLWithFallback(part schema.MessagePartCommon, fallbackMIMEType string) string {
+	if part.Base64Data == nil {
+		return ""
+	}
+	data := strings.TrimSpace(*part.Base64Data)
+	if data == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(data), "data:") {
+		return data
+	}
+	mimeType := strings.TrimSpace(part.MIMEType)
+	if mimeType == "" {
+		mimeType = fallbackMIMEType
+	}
+	return "data:" + mimeType + ";base64," + data
 }
 
 func shouldSwapToolOutput(callID string, output string) bool {

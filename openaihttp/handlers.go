@@ -56,6 +56,10 @@ func ClaudeMessagesHandler(cfg Config) (http.HandlerFunc, error) {
 	return h.handleMessages, nil
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func ClaudeCountTokensHandler(cfg Config) (http.HandlerFunc, error) {
 	resolved, err := resolveConfig(cfg)
 	if err != nil {
@@ -73,6 +77,14 @@ func ClaudeCountTokensHandler(cfg Config) (http.HandlerFunc, error) {
 	return h.handleCountTokens, nil
 }
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
 	return func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
 		accessToken, accountID, err := resolved.AuthProvider(ctx)
@@ -85,6 +97,10 @@ func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, mode
 		}
 
 		m, err := backend.NewChatModel(backend.ChatModelConfig{
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 			Model:           modelID,
 			BackendURL:      resolved.BackendURL,
 			AccessToken:     accessToken,
@@ -92,6 +108,29 @@ func newChatModelFactory(resolved resolvedConfig) func(ctx context.Context, mode
 			HTTPClient:      resolved.HTTPClient,
 			Originator:      resolved.Originator,
 			ReasoningEffort: resolved.ReasoningEffort,
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+			Model:       modelID,
+			BackendURL:  resolved.BackendURL,
+			AccessToken: accessToken,
+			AccountID:   accountID,
+			HTTPClient:  resolved.HTTPClient,
+			Originator:  resolved.Originator,
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 		})
 		if err != nil {
 			return nil, &httpError{

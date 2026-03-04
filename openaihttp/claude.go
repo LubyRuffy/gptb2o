@@ -4,16 +4,52 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+=======
+	"net/http"
+	"strings"
+>>>>>>> theirs
+=======
+	"net/http"
+	"strings"
+>>>>>>> theirs
+=======
+	"net/http"
+	"strings"
+>>>>>>> theirs
+=======
+	"net/http"
+	"strings"
+>>>>>>> theirs
 	"time"
 
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+=======
+	einoModel "github.com/cloudwego/eino/components/model"
+>>>>>>> theirs
+=======
+	einoModel "github.com/cloudwego/eino/components/model"
+>>>>>>> theirs
+=======
+	einoModel "github.com/cloudwego/eino/components/model"
+>>>>>>> theirs
+=======
+	einoModel "github.com/cloudwego/eino/components/model"
+>>>>>>> theirs
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
@@ -33,6 +69,10 @@ type claudeCompatHandler struct {
 }
 
 type claudeMessagesRequest struct {
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	Model         string             `json:"model"`
 	Messages      []claudeMessage    `json:"messages"`
 	System        claudeContentField `json:"system,omitempty"`
@@ -46,6 +86,28 @@ type claudeMessagesRequest struct {
 	Temperature   *float32           `json:"temperature,omitempty"`
 	TopP          *float32           `json:"top_p,omitempty"`
 	TopK          *int               `json:"top_k,omitempty"`
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+	Model     string             `json:"model"`
+	Messages  []claudeMessage    `json:"messages"`
+	System    claudeContentField `json:"system,omitempty"`
+	Stream    bool               `json:"stream"`
+	MaxTokens int                `json:"max_tokens"`
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 }
 
 type claudeMessage struct {
@@ -53,6 +115,10 @@ type claudeMessage struct {
 	Content claudeContentField `json:"content"`
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 type claudeTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -65,6 +131,14 @@ type claudeToolChoice struct {
 	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 type claudeContentField struct {
 	raw json.RawMessage
 }
@@ -74,6 +148,10 @@ func (f *claudeContentField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 type claudeContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -108,6 +186,42 @@ type claudeMessageDeltaUsage struct {
 
 type claudeCountTokensResponse struct {
 	InputTokens int `json:"input_tokens"`
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+type claudeContentText struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type claudeMessageResponse struct {
+	ID           string              `json:"id"`
+	Type         string              `json:"type"`
+	Role         string              `json:"role"`
+	Model        string              `json:"model"`
+	Content      []claudeContentText `json:"content"`
+	StopReason   string              `json:"stop_reason"`
+	StopSequence *string             `json:"stop_sequence"`
+	Usage        claudeUsage         `json:"usage"`
+}
+
+type claudeUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 }
 
 func newClaudeCompatHandler(cfg claudeCompatConfig) (*claudeCompatHandler, error) {
@@ -147,14 +261,30 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, "model is required")
 		return
 	}
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	if req.MaxTokens <= 0 {
 		h.writeError(w, http.StatusBadRequest, "max_tokens is required")
 		return
 	}
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if len(req.Messages) == 0 {
 		h.writeError(w, http.StatusBadRequest, "messages is required")
 		return
 	}
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	if req.Temperature != nil && req.TopP != nil {
 		h.writeError(w, http.StatusBadRequest, "temperature and top_p cannot both be set")
 		return
@@ -224,16 +354,46 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	}
 
 	tools, err := convertClaudeTools(toolsReq)
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+	modelID := normalizeClaudeModel(req.Model)
+	if !gptb2o.IsSupportedModelID(modelID) {
+		h.writeError(w, http.StatusBadRequest, "unsupported model")
+		return
+	}
+	modelID = gptb2o.NormalizeModelID(modelID)
+
+	chatInput, err := convertClaudeMessages(req.System, req.Messages)
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+<<<<<<< ours
+<<<<<<< ours
 	chatInput, err := convertClaudeMessages(req.System, req.Messages)
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+<<<<<<< ours
+<<<<<<< ours
 	inputTokens := estimateClaudeInputTokens(chatInput, tools)
 
 	if req.Stream {
@@ -279,6 +439,37 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	chatModel = applyClaudeSamplingParams(chatModel, req.Temperature, req.TopP)
 
 	respMsg, err := chatModel.Generate(r.Context(), chatInput)
+=======
+=======
+
+>>>>>>> theirs
+=======
+
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+	chatModel, err := h.newChatModel(r.Context(), modelID, nil, nil)
+	if err != nil {
+		h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
+		return
+	}
+
+	if req.Stream {
+		h.writeMessagesStream(w, r, chatModel, modelID, chatInput)
+		return
+	}
+
+	respMsg, err := chatModel.Generate(r.Context(), chatInput, einoModel.WithTemperature(0))
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -288,6 +479,10 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	if respMsg != nil {
 		text = respMsg.Content
 	}
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	limitedText, limitStopReason, limitStopSequence := limitClaudeText(text, stopSequences, req.MaxTokens)
 
 	content := make([]claudeContentBlock, 0, 1)
@@ -333,10 +528,39 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 			InputTokens:  inputTokens,
 			OutputTokens: outputTokens,
 		},
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+	resp := claudeMessageResponse{
+		ID:         "msg_" + uuid.NewString(),
+		Type:       "message",
+		Role:       "assistant",
+		Model:      req.Model,
+		Content:    []claudeContentText{{Type: "text", Text: text}},
+		StopReason: "end_turn",
+		Usage:      claudeUsage{},
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	}
 	h.writeJSON(w, resp)
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func applyClaudeSamplingParams(m chatModel, temperature *float32, topP *float32) chatModel {
 	if m == nil {
 		return nil
@@ -407,6 +631,18 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	disableParallelToolUse bool,
 	toolCallChan <-chan *backend.ToolCall,
 ) {
+=======
+func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http.Request, chatModel chatModel, model string, chatInput []*schema.Message) {
+>>>>>>> theirs
+=======
+func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http.Request, chatModel chatModel, model string, chatInput []*schema.Message) {
+>>>>>>> theirs
+=======
+func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http.Request, chatModel chatModel, model string, chatInput []*schema.Message) {
+>>>>>>> theirs
+=======
+func (h *claudeCompatHandler) writeMessagesStream(w http.ResponseWriter, r *http.Request, chatModel chatModel, model string, chatInput []*schema.Message) {
+>>>>>>> theirs
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -417,11 +653,31 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		return
 	}
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	sr, err := chatModel.Stream(ctx, chatInput)
+=======
+	sr, err := chatModel.Stream(r.Context(), chatInput)
+>>>>>>> theirs
+=======
+	sr, err := chatModel.Stream(r.Context(), chatInput)
+>>>>>>> theirs
+=======
+	sr, err := chatModel.Stream(r.Context(), chatInput)
+>>>>>>> theirs
+=======
+	sr, err := chatModel.Stream(r.Context(), chatInput)
+>>>>>>> theirs
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	defer sr.Close()
 
 	msgID := "msg_" + uuid.NewString()
@@ -679,10 +935,84 @@ func (h *claudeCompatHandler) writeMessagesStream(
 			"stop_sequence": stopSequence,
 		},
 		"usage": claudeMessageDeltaUsage{OutputTokens: outputTokens},
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+
+	msgID := "msg_" + uuid.NewString()
+	startPayload := map[string]any{
+		"type": "message_start",
+		"message": claudeMessageResponse{
+			ID:         msgID,
+			Type:       "message",
+			Role:       "assistant",
+			Model:      model,
+			Content:    []claudeContentText{},
+			StopReason: "",
+			Usage:      claudeUsage{},
+		},
+	}
+	writeClaudeSSEEvent(w, flusher, "message_start", startPayload)
+	writeClaudeSSEEvent(w, flusher, "content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": 0,
+		"content_block": map[string]any{
+			"type": "text",
+			"text": "",
+		},
+	})
+
+	for {
+		msg, err := sr.Recv()
+		if err != nil {
+			break
+		}
+		if msg == nil || strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		writeClaudeSSEEvent(w, flusher, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": msg.Content,
+			},
+		})
+	}
+
+	writeClaudeSSEEvent(w, flusher, "content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": 0,
+	})
+	writeClaudeSSEEvent(w, flusher, "message_delta", map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+		},
+		"usage": claudeUsage{},
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	})
 	writeClaudeSSEEvent(w, flusher, "message_stop", map[string]any{"type": "message_stop"})
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func estimateClaudeInputTokens(input []*schema.Message, tools []openaiapi.OpenAITool) int {
 	totalChars := 0
 	for _, msg := range input {
@@ -837,6 +1167,14 @@ func limitClaudeText(text string, stopSequences []string, maxTokens int) (string
 	return text[:cut], reason, seqPtr
 }
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 func writeClaudeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload any) {
 	data, _ := json.Marshal(payload)
 	_, _ = fmt.Fprintf(w, "event: %s\n", event)
@@ -844,6 +1182,10 @@ func writeClaudeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event stri
 	flusher.Flush()
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
 	if len(tools) == 0 {
 		return nil, nil
@@ -875,12 +1217,36 @@ func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
 func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
 	result := make([]*schema.Message, 0, len(messages)+1)
 	if systemText, err := claudeContentToText(system.raw); err != nil {
+=======
+func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
+	result := make([]*schema.Message, 0, len(messages)+1)
+	if systemText, err := claudeContentToText(system); err != nil {
+>>>>>>> theirs
+=======
+func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
+	result := make([]*schema.Message, 0, len(messages)+1)
+	if systemText, err := claudeContentToText(system); err != nil {
+>>>>>>> theirs
+=======
+func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
+	result := make([]*schema.Message, 0, len(messages)+1)
+	if systemText, err := claudeContentToText(system); err != nil {
+>>>>>>> theirs
+=======
+func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
+	result := make([]*schema.Message, 0, len(messages)+1)
+	if systemText, err := claudeContentToText(system); err != nil {
+>>>>>>> theirs
 		return nil, err
 	} else if strings.TrimSpace(systemText) != "" {
 		result = append(result, schema.SystemMessage(systemText))
 	}
 
 	for _, msg := range messages {
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
 		if role == "" {
 			return nil, fmt.Errorf("message role is required")
@@ -906,6 +1272,40 @@ func convertClaudeMessages(system claudeContentField, messages []claudeMessage) 
 			if err := appendClaudeAssistantBlocks(&result, blocks); err != nil {
 				return nil, err
 			}
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+		role := strings.TrimSpace(msg.Role)
+		if role == "" {
+			return nil, fmt.Errorf("message role is required")
+		}
+		text, err := claudeContentToText(msg.Content)
+		if err != nil {
+			return nil, err
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		switch role {
+		case "user":
+			result = append(result, schema.UserMessage(text))
+		case "assistant":
+			result = append(result, schema.AssistantMessage(text, nil))
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 		default:
 			return nil, fmt.Errorf("unsupported role: %s", role)
 		}
@@ -916,6 +1316,10 @@ func convertClaudeMessages(system claudeContentField, messages []claudeMessage) 
 	return result, nil
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func parseClaudeContentBlocks(raw json.RawMessage) ([]claudeContentBlock, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
@@ -1041,16 +1445,52 @@ func claudeBlocksToText(blocks []claudeContentBlock) (string, error) {
 
 func claudeContentToText(raw json.RawMessage) (string, error) {
 	trimmed := strings.TrimSpace(string(raw))
+=======
+func claudeContentToText(content claudeContentField) (string, error) {
+	trimmed := strings.TrimSpace(string(content.raw))
+>>>>>>> theirs
+=======
+func claudeContentToText(content claudeContentField) (string, error) {
+	trimmed := strings.TrimSpace(string(content.raw))
+>>>>>>> theirs
+=======
+func claudeContentToText(content claudeContentField) (string, error) {
+	trimmed := strings.TrimSpace(string(content.raw))
+>>>>>>> theirs
+=======
+func claudeContentToText(content claudeContentField) (string, error) {
+	trimmed := strings.TrimSpace(string(content.raw))
+>>>>>>> theirs
 	if trimmed == "" || trimmed == "null" {
 		return "", nil
 	}
 	if trimmed[0] == '"' {
 		var text string
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 		if err := json.Unmarshal(raw, &text); err != nil {
+=======
+		if err := json.Unmarshal(content.raw, &text); err != nil {
+>>>>>>> theirs
+=======
+		if err := json.Unmarshal(content.raw, &text); err != nil {
+>>>>>>> theirs
+=======
+		if err := json.Unmarshal(content.raw, &text); err != nil {
+>>>>>>> theirs
+=======
+		if err := json.Unmarshal(content.raw, &text); err != nil {
+>>>>>>> theirs
 			return "", fmt.Errorf("unsupported message content")
 		}
 		return text, nil
 	}
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 
 	var contentBlocks []claudeContentBlock
 	if err := json.Unmarshal(raw, &contentBlocks); err == nil {
@@ -1194,10 +1634,46 @@ func debugClaudeTaskToolCall(name string, callID string, args string, status str
 	}
 	trimmed := strings.TrimSpace(args)
 	log.Printf("[gptb2o][claude-tools] task call: id=%s status=%s args=%q", strings.TrimSpace(callID), strings.TrimSpace(status), trimmed)
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content.raw, &parts); err != nil {
+		return "", fmt.Errorf("unsupported message content")
+	}
+	var builder strings.Builder
+	for _, part := range parts {
+		if strings.TrimSpace(part.Type) != "text" {
+			continue
+		}
+		builder.WriteString(part.Text)
+	}
+	return builder.String(), nil
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 }
 
 func normalizeClaudeModel(model string) string {
 	trimmed := strings.TrimSpace(model)
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 	if trimmed == "" {
 		return ""
 	}
@@ -1216,12 +1692,24 @@ func normalizeClaudeModel(model string) string {
 	if strings.HasPrefix(lower, "claude-") {
 		return gptb2o.DefaultModelFullID
 	}
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 	if strings.HasPrefix(trimmed, gptb2o.ModelNamespace) || strings.HasPrefix(trimmed, gptb2o.LegacyModelNamespace) {
 		return trimmed
 	}
 	return gptb2o.ModelNamespace + trimmed
 }
 
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
 func resolveClaudeModelID(model string) (string, error) {
 	candidate := normalizeClaudeModel(model)
 	if !gptb2o.IsSupportedModelID(candidate) {
@@ -1230,6 +1718,14 @@ func resolveClaudeModelID(model string) (string, error) {
 	return gptb2o.NormalizeModelID(candidate), nil
 }
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 func writeClaudeError(w http.ResponseWriter, statusCode int, message string) {
 	type claudeErrBody struct {
 		Type  string `json:"type"`

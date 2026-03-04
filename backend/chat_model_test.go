@@ -276,6 +276,86 @@ func TestBuildRequestPayload_SamplingParamsSerialized(t *testing.T) {
 	require.InDelta(t, float64(0.9), raw["top_p"].(float64), 0.0001)
 }
 
+func TestBuildRequestPayload_UserInputMultiContentWithPDF(t *testing.T) {
+	m := newTestChatModel("")
+	pdfDataURL := "data:application/pdf;base64,QUJDRA=="
+	input := []*schema.Message{
+		{
+			Role: schema.User,
+			UserInputMultiContent: []schema.MessageInputPart{
+				{
+					Type: schema.ChatMessagePartTypeText,
+					Text: "提取文本",
+				},
+				{
+					Type: schema.ChatMessagePartTypeFileURL,
+					File: &schema.MessageInputFile{
+						MessagePartCommon: schema.MessagePartCommon{
+							URL:      &pdfDataURL,
+							MIMEType: "application/pdf",
+						},
+						Name: "sample.pdf",
+					},
+				},
+			},
+		},
+	}
+
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload.Input)
+
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	inputItems, ok := raw["input"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, inputItems)
+
+	firstItem, ok := inputItems[0].(map[string]any)
+	require.True(t, ok)
+	contentParts, ok := firstItem["content"].([]any)
+	require.True(t, ok, "多模态消息应序列化为 content 数组")
+	require.Len(t, contentParts, 2)
+
+	textPart, ok := contentParts[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_text", textPart["type"])
+	require.Equal(t, "提取文本", textPart["text"])
+
+	filePart, ok := contentParts[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_file", filePart["type"])
+	require.Equal(t, pdfDataURL, filePart["file_data"])
+	require.Equal(t, "application/pdf", filePart["mime_type"])
+	require.Equal(t, "sample.pdf", filePart["filename"])
+}
+
+func TestBuildRequestPayload_UserInputMultiContentTextOnlyFallback(t *testing.T) {
+	m := newTestChatModel("")
+	input := []*schema.Message{
+		{
+			Role: schema.User,
+			UserInputMultiContent: []schema.MessageInputPart{
+				{Type: schema.ChatMessagePartTypeText, Text: "hello"},
+				{Type: schema.ChatMessagePartTypeText, Text: " world"},
+			},
+		},
+	}
+
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload.Input)
+
+	firstItem := payload.Input[0]
+	content, ok := firstItem.Content.(string)
+	require.True(t, ok, "纯文本多段输入应保持 string content 兼容")
+	require.Equal(t, "hello world", content)
+}
+
 func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 	body := strings.NewReader("" +
 		"data: {\"type\":\"response.web_search_call.in_progress\",\"item_id\":\"tool-1\"}\n\n" +

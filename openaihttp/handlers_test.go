@@ -235,7 +235,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 			Input []struct {
 				Type    string `json:"type"`
 				Role    string `json:"role"`
-				Content string `json:"content"`
+				Content any    `json:"content"`
 			} `json:"input"`
 			Instructions string `json:"instructions"`
 			Store        bool   `json:"store"`
@@ -261,6 +261,24 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 			require.Equal(t, "assistant", payload.Input[1].Role)
 			require.Equal(t, "ok", payload.Input[1].Content)
 			require.Equal(t, "top\n\nsys", payload.Instructions)
+		case 3:
+			require.Equal(t, "gpt-5.1", payload.Model)
+			require.Len(t, payload.Input, 1)
+			require.Equal(t, "user", payload.Input[0].Role)
+			parts, ok := payload.Input[0].Content.([]any)
+			require.True(t, ok)
+			require.Len(t, parts, 2)
+
+			textPart, ok := parts[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "input_text", textPart["type"])
+			require.Equal(t, "看图", textPart["text"])
+
+			imagePart, ok := parts[1].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "input_image", imagePart["type"])
+			require.Equal(t, "https://example.com/cat.png", imagePart["image_url"])
+			require.Equal(t, "high", imagePart["detail"])
 		default:
 			t.Fatalf("unexpected request idx: %d", idx)
 		}
@@ -296,6 +314,28 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
     {"role":"system","content":"sys"},
     {"role":"user","content":[{"type":"input_text","text":"hi "},{"type":"text","text":{"value":"there"}}]},
     {"role":"assistant","content":"ok"}
+  ],
+  "stream":false
+}`, gptb2o.ModelNamespace+"gpt-5.1"))
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		responsesHandler(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("input-messages-with-image", func(t *testing.T) {
+		reqBody := []byte(fmt.Sprintf(`{
+  "model":%q,
+  "input":[
+    {
+      "role":"user",
+      "content":[
+        {"type":"input_text","text":"看图"},
+        {"type":"input_image","image_url":{"url":"https://example.com/cat.png","detail":"high"}}
+      ]
+    }
   ],
   "stream":false
 }`, gptb2o.ModelNamespace+"gpt-5.1"))
@@ -398,8 +438,8 @@ func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
 func TestResponses_PassesThroughCustomFunctionTools(t *testing.T) {
 	var gotTools []backend.ToolDefinition
 
-		backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer r.Body.Close()
+	backendServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
 
 		var payload struct {
 			Tools []backend.ToolDefinition `json:"tools"`
@@ -407,11 +447,11 @@ func TestResponses_PassesThroughCustomFunctionTools(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 		gotTools = append(gotTools, payload.Tools...)
 
-			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
-			fmt.Fprint(w, "data: [DONE]\n\n")
-		}))
-		t.Cleanup(backendServer.Close)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backendServer.Close)
 
 	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
 		BackendURL:   backendServer.URL,

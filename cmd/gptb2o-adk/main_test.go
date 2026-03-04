@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,4 +63,60 @@ func TestBashToolRun_EmptyCommand(t *testing.T) {
 	bt := newBashTool()
 	_, err := bt.InvokableRun(context.Background(), `{"command":""}`)
 	require.Error(t, err)
+}
+
+func TestBuildUserMessage_TextOnly(t *testing.T) {
+	msg, err := buildUserMessage("hello", "", "")
+	require.NoError(t, err)
+	require.Equal(t, schema.User, msg.Role)
+	require.Equal(t, "hello", msg.Content)
+	require.Empty(t, msg.UserInputMultiContent)
+}
+
+func TestBuildUserMessage_TextAndImageURL(t *testing.T) {
+	msg, err := buildUserMessage("describe", "https://example.com/a.png", "high")
+	require.NoError(t, err)
+	require.Equal(t, schema.User, msg.Role)
+	require.Empty(t, msg.Content)
+	require.Len(t, msg.UserInputMultiContent, 2)
+
+	textPart := msg.UserInputMultiContent[0]
+	require.Equal(t, schema.ChatMessagePartTypeText, textPart.Type)
+	require.Equal(t, "describe", textPart.Text)
+
+	imagePart := msg.UserInputMultiContent[1]
+	require.Equal(t, schema.ChatMessagePartTypeImageURL, imagePart.Type)
+	require.NotNil(t, imagePart.Image)
+	require.NotNil(t, imagePart.Image.URL)
+	require.Equal(t, "https://example.com/a.png", *imagePart.Image.URL)
+	require.Equal(t, schema.ImageURLDetailHigh, imagePart.Image.Detail)
+}
+
+func TestBuildUserMessage_LocalImageFile(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "tiny.png")
+	pngBase64 := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5m9R0AAAAASUVORK5CYII="
+	data, err := base64.StdEncoding.DecodeString(pngBase64)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(imagePath, data, 0o600))
+
+	msg, err := buildUserMessage("", imagePath, "low")
+	require.NoError(t, err)
+	require.Equal(t, schema.User, msg.Role)
+	require.Len(t, msg.UserInputMultiContent, 1)
+
+	imagePart := msg.UserInputMultiContent[0]
+	require.Equal(t, schema.ChatMessagePartTypeImageURL, imagePart.Type)
+	require.NotNil(t, imagePart.Image)
+	require.Nil(t, imagePart.Image.URL)
+	require.NotNil(t, imagePart.Image.Base64Data)
+	require.NotEmpty(t, *imagePart.Image.Base64Data)
+	require.Equal(t, "image/png", imagePart.Image.MIMEType)
+	require.Equal(t, schema.ImageURLDetailLow, imagePart.Image.Detail)
+}
+
+func TestBuildUserMessage_InvalidImageDetail(t *testing.T) {
+	_, err := buildUserMessage("hello", "https://example.com/a.png", "ultra")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid image-detail")
 }

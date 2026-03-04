@@ -43,7 +43,14 @@ type responseInputMessage struct {
 type backendInputItem struct {
 	Type    string `json:"type"`
 	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Content any    `json:"content,omitempty"`
+}
+
+type backendMessageContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type backendResponsesPayload struct {
@@ -97,8 +104,8 @@ func newResponsesHandler(cfg resolvedConfig) http.HandlerFunc {
 		if effort == "" {
 			effort = cfg.ReasoningEffort
 		}
-	tools := backend.EnsureWebSearchToolDefinition(backend.ToolsFromOpenAITools(req.Tools))
-	tools, _ = backend.RemoveToolTypeDefinitions(tools, backend.ToolTypeCodeInterpreter)
+		tools := backend.EnsureWebSearchToolDefinition(backend.ToolsFromOpenAITools(req.Tools))
+		tools, _ = backend.RemoveToolTypeDefinitions(tools, backend.ToolTypeCodeInterpreter)
 
 		accessToken, accountID, err := cfg.AuthProvider(r.Context())
 		if err != nil {
@@ -312,19 +319,18 @@ func parseResponsesInput(raw json.RawMessage) ([]backendInputItem, string, error
 			if role == "" {
 				return nil, "", fmt.Errorf("message role is required")
 			}
-			content, err := contentToText(msg.Content)
+			content, textContent, err := normalizeMessageContent(msg.Content)
 			if err != nil {
 				return nil, "", err
-			}
-			content = strings.TrimSpace(content)
-			if content == "" {
-				continue
 			}
 
 			switch role {
 			case "system", "developer":
-				instructions = mergeInstructions(instructions, content)
+				instructions = mergeInstructions(instructions, strings.TrimSpace(textContent))
 			default:
+				if !hasBackendMessageContent(content) {
+					continue
+				}
 				items = append(items, backendInputItem{Type: "message", Role: role, Content: content})
 			}
 		}
@@ -338,42 +344,113 @@ func parseResponsesInput(raw json.RawMessage) ([]backendInputItem, string, error
 	}
 }
 
-func contentToText(raw json.RawMessage) (string, error) {
+func normalizeMessageContent(raw json.RawMessage) (any, string, error) {
 	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return "", nil
+		return "", "", nil
 	}
 
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return text, nil
+		return text, text, nil
 	}
 
 	var parts []interface{}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", fmt.Errorf("unsupported message content")
+		return "", "", fmt.Errorf("unsupported message content")
 	}
 
-	var builder strings.Builder
+	normalized := make([]backendMessageContentPart, 0, len(parts))
+	var textBuilder strings.Builder
+	hasNonTextPart := false
+
 	for _, part := range parts {
 		partMap, ok := part.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		partType, _ := partMap["type"].(string)
-		if partType != "text" && partType != "input_text" {
-			continue
-		}
-		if textValue, ok := partMap["text"].(string); ok {
-			builder.WriteString(textValue)
-			continue
-		}
-		if textObj, ok := partMap["text"].(map[string]interface{}); ok {
-			if value, ok := textObj["value"].(string); ok {
-				builder.WriteString(value)
+		partType := strings.TrimSpace(toString(partMap["type"]))
+		switch partType {
+		case "text", "input_text":
+			textValue := extractTextPartValue(partMap["text"])
+			if textValue == "" {
+				continue
 			}
+			textBuilder.WriteString(textValue)
+			normalized = append(normalized, backendMessageContentPart{
+				Type: "input_text",
+				Text: textValue,
+			})
+		case "input_image", "image_url":
+			imageURL, detail := extractImageURLAndDetail(partMap["image_url"])
+			if imageURL == "" {
+				// 兼容 image_url 直接给 string 的变体（非标准但常见）。
+				imageURL = strings.TrimSpace(toString(partMap["url"]))
+			}
+			if imageURL == "" {
+				continue
+			}
+			item := backendMessageContentPart{
+				Type:     "input_image",
+				ImageURL: imageURL,
+			}
+			if detail == "" {
+				detail = strings.TrimSpace(toString(partMap["detail"]))
+			}
+			if detail != "" {
+				item.Detail = detail
+			}
+			normalized = append(normalized, item)
+			hasNonTextPart = true
 		}
 	}
-	return builder.String(), nil
+
+	if len(normalized) == 0 {
+		return "", textBuilder.String(), nil
+	}
+	if !hasNonTextPart {
+		return textBuilder.String(), textBuilder.String(), nil
+	}
+	return normalized, textBuilder.String(), nil
+}
+
+func hasBackendMessageContent(content any) bool {
+	switch v := content.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(v) != ""
+	case []backendMessageContentPart:
+		return len(v) > 0
+	default:
+		return true
+	}
+}
+
+func extractTextPartValue(raw any) string {
+	if textValue, ok := raw.(string); ok {
+		return textValue
+	}
+	textObj, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return toString(textObj["value"])
+}
+
+func extractImageURLAndDetail(raw any) (string, string) {
+	if imageURL, ok := raw.(string); ok {
+		return strings.TrimSpace(imageURL), ""
+	}
+	imageURLObj, ok := raw.(map[string]interface{})
+	if !ok {
+		return "", ""
+	}
+	return strings.TrimSpace(toString(imageURLObj["url"])), strings.TrimSpace(toString(imageURLObj["detail"]))
+}
+
+func toString(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func writeResponsesStream(w http.ResponseWriter, ctx context.Context, body io.Reader) error {

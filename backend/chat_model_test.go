@@ -330,7 +330,8 @@ func TestBuildRequestPayload_UserInputMultiContentWithPDF(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "input_file", filePart["type"])
 	require.Equal(t, pdfDataURL, filePart["file_data"])
-	require.Equal(t, "application/pdf", filePart["mime_type"])
+	_, hasMimeType := filePart["mime_type"]
+	require.False(t, hasMimeType, "input_file 不应携带 mime_type 字段")
 	require.Equal(t, "sample.pdf", filePart["filename"])
 }
 
@@ -354,6 +355,60 @@ func TestBuildRequestPayload_UserInputMultiContentTextOnlyFallback(t *testing.T)
 	content, ok := firstItem.Content.(string)
 	require.True(t, ok, "纯文本多段输入应保持 string content 兼容")
 	require.Equal(t, "hello world", content)
+}
+
+func TestBuildRequestPayload_UserInputMultiContentWithImage_NoMimeTypeField(t *testing.T) {
+	m := newTestChatModel("")
+	imageData := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5m9R0AAAAASUVORK5CYII="
+	input := []*schema.Message{
+		{
+			Role: schema.User,
+			UserInputMultiContent: []schema.MessageInputPart{
+				{
+					Type: schema.ChatMessagePartTypeText,
+					Text: "描述图片",
+				},
+				{
+					Type: schema.ChatMessagePartTypeImageURL,
+					Image: &schema.MessageInputImage{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &imageData,
+							MIMEType:   "image/png",
+						},
+						Detail: schema.ImageURLDetailHigh,
+					},
+				},
+			},
+		},
+	}
+
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload.Input)
+
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	inputItems, ok := raw["input"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, inputItems)
+
+	firstItem, ok := inputItems[0].(map[string]any)
+	require.True(t, ok)
+	contentParts, ok := firstItem["content"].([]any)
+	require.True(t, ok, "多模态消息应序列化为 content 数组")
+	require.Len(t, contentParts, 2)
+
+	imagePart, ok := contentParts[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_image", imagePart["type"])
+	require.NotEmpty(t, imagePart["image_url"])
+	require.Equal(t, "high", imagePart["detail"])
+	_, hasMimeType := imagePart["mime_type"]
+	require.False(t, hasMimeType, "input_image 不应携带 mime_type 字段")
 }
 
 func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {

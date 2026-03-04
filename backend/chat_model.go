@@ -242,7 +242,6 @@ type requestMessageContentPart struct {
 	Detail   string `json:"detail,omitempty"`
 	FileData string `json:"file_data,omitempty"`
 	FileURL  string `json:"file_url,omitempty"`
-	MIMEType string `json:"mime_type,omitempty"`
 	Filename string `json:"filename,omitempty"`
 }
 
@@ -424,9 +423,6 @@ func resolveMessageContent(msg *schema.Message) any {
 				if detail := strings.TrimSpace(string(part.Image.Detail)); detail != "" {
 					partItem.Detail = detail
 				}
-				if mimeType := strings.TrimSpace(part.Image.MIMEType); mimeType != "" {
-					partItem.MIMEType = mimeType
-				}
 				parts = append(parts, partItem)
 				hasNonTextPart = true
 			case schema.ChatMessagePartTypeFileURL:
@@ -453,9 +449,6 @@ func resolveMessageContent(msg *schema.Message) any {
 					partItem.FileData = fileData
 				} else {
 					partItem.FileURL = fileURL
-				}
-				if mimeType := strings.TrimSpace(part.File.MIMEType); mimeType != "" {
-					partItem.MIMEType = mimeType
 				}
 				if filename := strings.TrimSpace(part.File.Name); filename != "" {
 					partItem.Filename = filename

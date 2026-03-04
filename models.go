@@ -26,8 +26,8 @@ type presetModelDef struct {
 
 // 使用固定顺序，确保客户端“默认选中第一项”时稳定得到 DefaultModelID。
 var presetModelDefs = []presetModelDef{
-	{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex"},
 	{ID: "gpt-5.3-codex-spark", Name: "GPT-5.3 Codex Spark"},
+	{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex"},
 	{ID: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
 	{ID: "gpt-5.2", Name: "GPT-5.2"},
 	{ID: "gpt-5.1-codex-max", Name: "GPT-5.1 Codex Max"},

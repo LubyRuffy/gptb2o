@@ -36,7 +36,7 @@ curl http://127.0.0.1:8080/v1/models
 
 curl http://127.0.0.1:8080/v1/responses \\
   -H 'Content-Type: application/json' \\
-  -d '{"model":"chatgpt/codex/gpt-5.3-codex","input":"hi","stream":false}'
+  -d '{"model":"chatgpt/codex/gpt-5.4","input":"hi","stream":false}'
 
 # 指定默认 reasoning effort（会透传到 backend 的 reasoning.effort）
 go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort medium
@@ -45,10 +45,10 @@ go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort medium
 ### 2) 最小 ADK demo（SDK 验证）
 
 ```bash
-go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex --input "你好"
+go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.4 --input "你好"
 
 # ADK demo 也支持指定 reasoning effort
-go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.3-codex --reasoning-effort high --input "你好"
+go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.4 --reasoning-effort high --input "你好"
 ```
 
 ## OpenAI 兼容端点
@@ -81,7 +81,7 @@ go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-p
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:12345 \
 ANTHROPIC_API_KEY=local-dev \
-claude --setting-sources project,local --model chatgpt/codex/gpt-5.3-codex
+claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
 ```
 
 说明：
@@ -96,7 +96,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.3-codex
 curl http://127.0.0.1:12345/v1/messages \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"gpt-5.3-codex",
+    "model":"gpt-5.4",
     "max_tokens":1024,
     "stream":false,
     "messages":[{"role":"user","content":"请用一句话介绍 gptb2o"}]

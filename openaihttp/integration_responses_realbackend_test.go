@@ -49,7 +49,7 @@ func TestIntegration_Responses_RealBackend_StreamFalse(t *testing.T) {
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
-	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", bytes.NewReader(reqBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
@@ -97,7 +97,7 @@ func TestIntegration_Responses_RealBackend_StreamFalse_WithReasoningEffort(t *te
   "input":"hi",
   "stream":false,
   "reasoning":{"effort":"medium"}
-}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", bytes.NewReader(reqBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")

@@ -22,10 +22,10 @@ func TestDefaultModel_IsSupported(t *testing.T) {
 	}
 }
 
-func TestPresetModels_ContainsSpark(t *testing.T) {
-	target := ModelNamespace + "gpt-5.3-codex-spark"
+func TestPresetModels_ContainsLatestModel(t *testing.T) {
+	target := ModelNamespace + "gpt-5.4"
 	if !IsSupportedModelID(target) {
-		t.Fatalf("spark model id %q should be supported", target)
+		t.Fatalf("latest model id %q should be supported", target)
 	}
 
 	found := false
@@ -36,6 +36,6 @@ func TestPresetModels_ContainsSpark(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("spark model %q should be in preset models list", target)
+		t.Fatalf("latest model %q should be in preset models list", target)
 	}
 }

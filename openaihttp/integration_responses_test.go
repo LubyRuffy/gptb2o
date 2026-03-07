@@ -40,7 +40,7 @@ func TestIntegration_Responses_StreamFalse_EndToEnd(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
 
 		// 代理层应把外部 model namespace 还原成后端需要的真实 model id。
-		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.Equal(t, "gpt-5.4", payload.Model)
 		require.True(t, payload.Stream)
 		require.False(t, payload.Store)
 		require.Len(t, payload.Input, 1)
@@ -54,7 +54,7 @@ func TestIntegration_Responses_StreamFalse_EndToEnd(t *testing.T) {
 		require.NotEqual(t, "[undefined]", strings.TrimSpace(payload.Instructions))
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_it_1\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_it_1\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -88,7 +88,7 @@ func TestIntegration_Responses_StreamFalse_EndToEnd(t *testing.T) {
   "temperature": "[undefined]",
   "top_p": "[undefined]",
   "max_output_tokens": "[undefined]"
-}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 
 	resp, err := http.Post(srv.URL+"/v1/responses", "application/json", bytes.NewReader(reqBody))
 	require.NoError(t, err)

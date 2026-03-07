@@ -52,6 +52,13 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260307-225500 经验教训：Go 1.26 升级后静态检查工具需同步重建
+
+- 现象：`go test ./...`、`go build ./...`、`go vet ./...` 全部通过，但 `staticcheck` / `golangci-lint` 报出大量 `file requires newer Go version go1.26 (application built with go1.25)`、标准库/依赖 typecheck 异常。
+- 根因：本机 `staticcheck` 与 `golangci-lint` 二进制仍然是用 Go 1.25 构建，项目运行时 Go 已升级到 1.26，导致分析器在读取 Go 1.26 标准库和依赖时产生伪报错。
+- 处置：先用 `staticcheck -debug.version`、`golangci-lint version` 确认工具编译 Go 版本，再用当前 Go 重新执行 `go install honnef.co/go/tools/cmd/staticcheck@v0.6.1` 与 `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`，最后重跑 `./scripts/go_quality_check.sh`。
+- 预防：以后遇到“测试/构建通过但静态检查海量 typecheck 失败”的情况，优先排查本机 lint 工具编译版本是否落后于 `go version`，不要先改业务代码。
+
 ## 20260209-123427 经验教训：Issue #1 `/v1/responses` 400 `Instructions are required`
 
 - 最初误判原因：过度依赖 issue body 里 Cherry Studio 的 `"[undefined]"` 请求体日志，把它当作主要触发条件；没有先用最小化 `curl` 验证“即使不带 instructions 也会 400”这一事实。

@@ -7,6 +7,7 @@
 - 通过本地 OAuth token 直连 `https://chatgpt.com/backend-api/codex/responses`
 - 对外提供 OpenAI 兼容端点：`/v1/models`、`/v1/chat/completions`、`/v1/responses`
 - 提供 Claude 兼容端点：`/v1/messages`、`/v1/messages/count_tokens`
+- 面向 Claude Code 常见使用路径提供 Anthropic Messages 兼容子集，支持范围见 [docs/CLAUDE_CODE_COMPATIBILITY.md](docs/CLAUDE_CODE_COMPATIBILITY.md)
 - 支持 `reasoning.effort` 和 Claude `output_config.effort`
 - 支持 Claude 新旧 teammate 协议透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
 - 支持 SQLite 全链路追踪，可凭 `interaction_id` 回放一次请求
@@ -110,6 +111,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
 说明：
 - Claude CLI 推荐保留 `--setting-sources project,local`，否则可能优先走 OAuth 通道。
 - `/v1/messages` 已兼容 `output_config.effort`。
+- `/v1/messages` 的兼容目标是 Claude Code 常见使用路径，而不是完整 Anthropic Messages 全量对等；支持矩阵见 [docs/CLAUDE_CODE_COMPATIBILITY.md](docs/CLAUDE_CODE_COMPATIBILITY.md)。
 - teammate / agent teams 场景已支持新旧工具协议透传，不再只依赖旧 `Task`。
 
 ### Eino / ADK demo

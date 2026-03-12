@@ -232,6 +232,191 @@ func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	require.Equal(t, "end_turn", *resp.StopReason)
 }
 
+func TestClaudeMessages_ToolChoiceModes(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		wantStatus    int
+		wantErrSubstr string
+		wantToolCount int
+	}{
+		{
+			name: "none disables tools",
+			body: `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
+			wantStatus:    http.StatusOK,
+			wantToolCount: 0,
+		},
+		{
+			name:          "any requires tools",
+			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`,
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "tools is required when tool_choice.type=any",
+		},
+		{
+			name:          "tool requires matching tool name",
+			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "tool_choice.name not found in tools",
+		},
+		{
+			name:          "invalid tool_choice type rejected",
+			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"bogus"}}`,
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "invalid tool_choice.type",
+		},
+		{
+			name: "tool filters downstream tools",
+			body: `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}},{"name":"Edit","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
+			wantStatus:    http.StatusOK,
+			wantToolCount: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotTools []openaiapi.OpenAITool
+			h, err := newClaudeCompatHandler(claudeCompatConfig{
+				Now: time.Now,
+				NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+					gotTools = append([]openaiapi.OpenAITool(nil), tools...)
+					return &stubChatModel{generateResp: schema.AssistantMessage("ok", nil)}, nil
+				},
+				WriteJSON:  writeJSON,
+				WriteError: writeClaudeError,
+			})
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(tc.body)))
+			w := httptest.NewRecorder()
+			h.handleMessages(w, req)
+			require.Equal(t, tc.wantStatus, w.Code)
+			if tc.wantErrSubstr != "" {
+				data, readErr := io.ReadAll(w.Body)
+				require.NoError(t, readErr)
+				require.Contains(t, string(data), tc.wantErrSubstr)
+				return
+			}
+			require.Len(t, gotTools, tc.wantToolCount)
+			if tc.name == "tool filters downstream tools" {
+				require.Equal(t, "Edit", gotTools[0].Function.Name)
+			}
+		})
+	}
+}
+
+func TestClaudeMessages_NonStream_BackendErrorUsesCompatError(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return nil, &httpError{Status: http.StatusBadGateway, Message: "backend down"}
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":16}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), "backend down")
+	require.NotContains(t, w.Body.String(), `"type":"message"`)
+}
+
+func TestClaudeMessages_Stream_BackendCreationErrorUsesCompatError(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return nil, &httpError{Status: http.StatusBadGateway, Message: "backend stream down"}
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), "backend stream down")
+	require.NotContains(t, w.Body.String(), "event: message_start")
+}
+
+func TestClaudeMessages_Stream_TextEventSequence(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{streamMsgs: []*schema.Message{{Content: "hello"}}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var names []string
+	for _, ev := range events {
+		names = append(names, ev.Name)
+	}
+	require.Equal(t, []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}, names)
+}
+
+func TestClaudeMessages_Stream_ToolUseEventSequence(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			if toolCallHandler != nil {
+				toolCallHandler(&backend.ToolCall{
+					ID:        "call_tool_seq",
+					Name:      "Edit",
+					Arguments: `{"file":"main.go","content":"x"}`,
+					Status:    "completed",
+				})
+			}
+			return &stubChatModel{streamMsgs: []*schema.Message{}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var names []string
+	messageDeltaIdx := -1
+	messageStopIdx := -1
+	for idx, ev := range events {
+		names = append(names, ev.Name)
+		if ev.Name == "message_delta" {
+			messageDeltaIdx = idx
+			delta, _ := ev.Data["delta"].(map[string]any)
+			require.Equal(t, "tool_use", delta["stop_reason"])
+		}
+		if ev.Name == "message_stop" {
+			messageStopIdx = idx
+		}
+	}
+	require.Equal(t, []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}, names)
+	require.NotEqual(t, -1, messageDeltaIdx)
+	require.NotEqual(t, -1, messageStopIdx)
+	require.Less(t, messageDeltaIdx, messageStopIdx)
+}
+
 func TestClaudeMessages_Stream_OK(t *testing.T) {
 	h, err := newClaudeCompatHandler(claudeCompatConfig{
 		Now: time.Now,

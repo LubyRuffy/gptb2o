@@ -37,6 +37,31 @@ go test ./trace ./openaihttp ./cmd/gptb2o-server ./backend -v
 GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 ```
 
+## Claude 兼容性验证
+
+### 快速本地验证
+
+这些测试不依赖本机 `claude` 命令，适合日常回归：
+
+```bash
+go test ./openaihttp -run ClaudeMessages -v
+go test ./openaihttp -run 'ToolChoiceModes|TextEventSequence|ToolUseEventSequence' -v
+```
+
+### 可选真实 Claude CLI 验证
+
+这些测试依赖本机已安装 `claude`，并且需要显式打开环境变量；如果没有 `claude` 或未设置 `GPTB2O_RUN_CLAUDE_IT=1`，测试会 `SKIP`，这是预期行为。
+
+```bash
+GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
+```
+
+覆盖重点：
+- Claude `/v1/messages` 基础 handler 行为
+- `tool_choice` 常见模式
+- SSE 文本 / tool_use 事件顺序
+- teammate `Task` / `Agent` round-trip 真实 CLI 路径
+
 ### 真实 backend 集成测试
 
 默认跳过，需要真实 token 和网络。

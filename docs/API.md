@@ -60,6 +60,9 @@ curl http://127.0.0.1:12345/v1/responses \
 
 Claude Messages 兼容接口。
 
+> `/v1/messages` 主要面向 Claude Code 常见使用路径提供 Anthropic Messages 兼容子集，而不是完整 Anthropic Messages 对等实现。
+> 支持范围与已知缺口以 `docs/CLAUDE_CODE_COMPATIBILITY.md` 为准。
+
 特性：
 - 兼容 `model/messages/system/stream/max_tokens/tools`
 - 支持 `output_config.effort`
@@ -67,6 +70,7 @@ Claude Messages 兼容接口。
 - 支持 teammate 新旧协议工具透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
 - `stream=true` 返回 Claude 风格 SSE
 - `stream=false` 返回 Claude 风格 `message` JSON
+- `usage`、少见 content block 组合和部分 SSE 边角语义仍属于部分兼容范围
 
 示例：
 

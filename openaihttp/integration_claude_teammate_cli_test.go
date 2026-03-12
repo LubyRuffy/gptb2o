@@ -34,6 +34,14 @@ import (
 //
 //	GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
+	assertClaudeMessagesTeammateCLIRoundTrip(t, "Task")
+}
+
+func TestIntegration_ClaudeMessages_TeammateCLI_AgentRoundTrip(t *testing.T) {
+	assertClaudeMessagesTeammateCLIRoundTrip(t, "Agent")
+}
+
+func assertClaudeMessagesTeammateCLIRoundTrip(t *testing.T, preferredBootstrapTool string) {
 	if strings.TrimSpace(os.Getenv("GPTB2O_RUN_CLAUDE_IT")) == "" {
 		t.Skip("set GPTB2O_RUN_CLAUDE_IT=1 to run Claude CLI teammate integration test")
 	}
@@ -48,7 +56,7 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 		sawBootstrapSchema atomic.Bool
 		sawBootstrapResult atomic.Bool
 		stateMu            sync.Mutex
-		bootstrapToolName  = "Task"
+		bootstrapToolName  = preferredBootstrapTool
 		taskSubagentType   = "code-simplifier:code-simplifier"
 		lastTurnPayload    atomic.Value
 	)
@@ -81,6 +89,11 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 				sawBootstrapSchema.Store(true)
 				stateMu.Lock()
 				bootstrapToolName = toolName
+				stateMu.Unlock()
+			}
+			if strings.EqualFold(strings.TrimSpace(preferredBootstrapTool), "Agent") {
+				stateMu.Lock()
+				bootstrapToolName = "Agent"
 				stateMu.Unlock()
 			}
 			if selected := pickTaskSubagentType(payload.Tools); selected != "" {

@@ -1,0 +1,16 @@
+linters:
+  enable-all: true
+  disable:
+    - gochecknoinits
+    - paralleltest
+    - wrapcheck
+    - gosec
+    - gochecknoglobals
+    - musttag
+
+    # Deprecated ones:
+    - tenv
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15

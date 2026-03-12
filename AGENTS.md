@@ -52,6 +52,13 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260312-181500 经验教训：外部 CLI 协议漂移必须和可回放 trace 一起修
+
+- 现象：Claude Code 2.1.74 teammate 场景会发出新的 `Agent` / `TaskOutput` / `TaskStop` 工具协议，但仓库里的真实集成测试和局部兼容逻辑仍假设旧 `Task` schema，导致“普通消息可用，agent/team 流程异常停止”且难以事后定位。
+- 根因：一方面没有把客户端请求、backend 请求、backend 响应、最终客户端响应做同一 `interaction_id` 的落库，异常会话无法精确回放；另一方面测试过度绑定旧工具名，没有把“协议能力”而不是“单一旧字段”作为断言对象。
+- 处置：新增 SQLite 全链路 trace、`X-GPTB2O-Interaction-ID`、`--show-interaction` 回放入口；同时把 Claude teammate 集成测试改为兼容 `Agent` / `Task` 双协议，并把 `output_config.effort` 映射到 backend `reasoning.effort`。
+- 预防：以后修外部 CLI/SDK 兼容问题时，必须优先补“真实协议样本 + 最小复现 + 可回放 trace”，并让集成测试断言协议能力而不是写死某个历史字段名。
+
 ## 20260307-225500 经验教训：Go 1.26 升级后静态检查工具需同步重建
 
 - 现象：`go test ./...`、`go build ./...`、`go vet ./...` 全部通过，但 `staticcheck` / `golangci-lint` 报出大量 `file requires newer Go version go1.26 (application built with go1.25)`、标准库/依赖 typecheck 异常。

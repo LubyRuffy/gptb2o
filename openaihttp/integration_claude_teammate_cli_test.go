@@ -25,7 +25,7 @@ import (
 
 // 真实 Claude Code CLI 集成测试：
 // 1) 启动本地 gptb2o 服务（/v1/messages）
-// 2) 启动 fake backend，首轮返回 Task tool_use，次轮校验 function_call_output
+// 2) 启动 fake backend，首轮返回 Agent/Task tool_use，次轮校验 function_call_output
 // 3) 调用 claude CLI 验证 teammate 调用链路
 //
 // 默认跳过，避免在无本地 claude 环境时影响常规测试。
@@ -44,12 +44,13 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var (
-		reqCount          int32
-		sawTaskSchema     atomic.Bool
-		sawTaskToolResult atomic.Bool
-		stateMu           sync.Mutex
-		taskSubagentType  = "code-simplifier:code-simplifier"
-		lastTurnPayload   atomic.Value
+		reqCount           int32
+		sawBootstrapSchema atomic.Bool
+		sawBootstrapResult atomic.Bool
+		stateMu            sync.Mutex
+		bootstrapToolName  = "Task"
+		taskSubagentType   = "code-simplifier:code-simplifier"
+		lastTurnPayload    atomic.Value
 	)
 
 	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +77,11 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 
 		if turn == 1 {
-			if hasTaskCoreSchema(payload.Tools) {
-				sawTaskSchema.Store(true)
+			if toolName, ok := findClaudeBootstrapTool(payload.Tools); ok {
+				sawBootstrapSchema.Store(true)
+				stateMu.Lock()
+				bootstrapToolName = toolName
+				stateMu.Unlock()
 			}
 			if selected := pickTaskSubagentType(payload.Tools); selected != "" {
 				stateMu.Lock()
@@ -86,14 +90,10 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 			}
 
 			stateMu.Lock()
+			selectedTool := bootstrapToolName
 			selectedSubagent := taskSubagentType
 			stateMu.Unlock()
-			args := map[string]any{
-				"description":   "Run teammate integration smoke test",
-				"prompt":        "请只回复 TEAMMATE_CLI_OK，不做文件修改。",
-				"subagent_type": selectedSubagent,
-				"max_turns":     1,
-			}
+			args := buildBootstrapToolArgs(payload.Tools, selectedTool, selectedSubagent)
 			argsJSON, _ := json.Marshal(args)
 
 			writeBackendSSE(t, w, map[string]any{
@@ -105,7 +105,7 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 							"id":        "fc_teammate_1",
 							"type":      "function_call",
 							"call_id":   "call_teammate_1",
-							"name":      "Task",
+							"name":      selectedTool,
 							"arguments": string(argsJSON),
 							"status":    "completed",
 						},
@@ -121,7 +121,7 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 				continue
 			}
 			if strings.TrimSpace(item.Output) != "" {
-				sawTaskToolResult.Store(true)
+				sawBootstrapResult.Store(true)
 				break
 			}
 		}
@@ -187,7 +187,7 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	gatewaySrv := httptest.NewServer(gateway)
 	t.Cleanup(gatewaySrv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(
@@ -208,12 +208,12 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatalf(
-			"claude command timed out: %v, output=%s, backend_req_count=%d, saw_task_schema=%v, saw_task_tool_result=%v, last_turn_payload=%#v",
+			"claude command timed out: %v, output=%s, backend_req_count=%d, saw_bootstrap_schema=%v, saw_bootstrap_tool_result=%v, last_turn_payload=%#v",
 			ctx.Err(),
 			string(out),
 			atomic.LoadInt32(&reqCount),
-			sawTaskSchema.Load(),
-			sawTaskToolResult.Load(),
+			sawBootstrapSchema.Load(),
+			sawBootstrapResult.Load(),
 			lastTurnPayload.Load(),
 		)
 	}
@@ -222,8 +222,8 @@ func TestIntegration_ClaudeMessages_TeammateCLI_TaskRoundTrip(t *testing.T) {
 	output := string(out)
 	require.NotContains(t, output, "Invalid tool parameters", "output=%s", output)
 	require.Contains(t, output, "TEAMMATE_CLI_OK", "output=%s", output)
-	require.True(t, sawTaskSchema.Load(), "first turn did not expose Task schema with required fields")
-	require.True(t, sawTaskToolResult.Load(), "second turn did not receive function_call_output for teammate Task")
+	require.True(t, sawBootstrapSchema.Load(), "first turn did not expose Agent/Task schema with required fields")
+	require.True(t, sawBootstrapResult.Load(), "second turn did not receive function_call_output for teammate Agent/Task")
 	require.GreaterOrEqual(t, atomic.LoadInt32(&reqCount), int32(2), "backend did not observe second turn")
 
 	gatewayReqMu.Lock()
@@ -266,40 +266,24 @@ func writeBackendSSE(t *testing.T, w http.ResponseWriter, payload any) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 }
 
-func hasTaskCoreSchema(tools []struct {
+func findClaudeBootstrapTool(tools []struct {
 	Type       string         `json:"type"`
 	Name       string         `json:"name,omitempty"`
 	Parameters map[string]any `json:"parameters,omitempty"`
-}) bool {
+}) (string, bool) {
 	for _, tool := range tools {
 		if !strings.EqualFold(strings.TrimSpace(tool.Type), "function") {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(tool.Name), "Task") {
+		name := strings.TrimSpace(tool.Name)
+		if !isClaudeBootstrapToolName(name) {
 			continue
 		}
-		requiredRaw, ok := tool.Parameters["required"]
-		if !ok {
-			return false
+		if hasBootstrapCoreSchema(tool) {
+			return name, true
 		}
-		requiredItems, ok := requiredRaw.([]any)
-		if !ok {
-			return false
-		}
-		required := make(map[string]struct{}, len(requiredItems))
-		for _, v := range requiredItems {
-			s, _ := v.(string)
-			s = strings.TrimSpace(s)
-			if s != "" {
-				required[s] = struct{}{}
-			}
-		}
-		_, hasDescription := required["description"]
-		_, hasPrompt := required["prompt"]
-		_, hasSubagentType := required["subagent_type"]
-		return hasDescription && hasPrompt && hasSubagentType
 	}
-	return false
+	return "", false
 }
 
 func pickTaskSubagentType(tools []struct {
@@ -311,7 +295,7 @@ func pickTaskSubagentType(tools []struct {
 		if !strings.EqualFold(strings.TrimSpace(tool.Type), "function") {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(tool.Name), "Task") {
+		if !isClaudeBootstrapToolName(tool.Name) {
 			continue
 		}
 		propsRaw, ok := tool.Parameters["properties"]
@@ -330,21 +314,103 @@ func pickTaskSubagentType(tools []struct {
 		if !ok {
 			continue
 		}
-		enumRaw, ok := subagentObj["enum"]
-		if !ok {
-			continue
-		}
-		enumItems, ok := enumRaw.([]any)
-		if !ok {
-			continue
-		}
-		for _, v := range enumItems {
-			s, _ := v.(string)
-			s = strings.TrimSpace(s)
-			if s != "" {
-				return s
+		if enumRaw, ok := subagentObj["enum"]; ok {
+			if enumItems, ok := enumRaw.([]any); ok {
+				for _, v := range enumItems {
+					s, _ := v.(string)
+					s = strings.TrimSpace(s)
+					if s != "" {
+						return s
+					}
+				}
 			}
 		}
+		return "general-purpose"
 	}
 	return ""
+}
+
+func hasBootstrapCoreSchema(tool struct {
+	Type       string         `json:"type"`
+	Name       string         `json:"name,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+}) bool {
+	required := requiredFieldSet(tool.Parameters)
+	if _, ok := required["description"]; !ok {
+		return false
+	}
+	if _, ok := required["prompt"]; !ok {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(tool.Name), "Task") {
+		_, ok := required["subagent_type"]
+		return ok
+	}
+
+	props := toolProperties(tool.Parameters)
+	_, ok := props["subagent_type"]
+	return ok
+}
+
+func buildBootstrapToolArgs(tools []struct {
+	Type       string         `json:"type"`
+	Name       string         `json:"name,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+}, toolName string, subagentType string) map[string]any {
+	args := map[string]any{
+		"description": "Run teammate integration smoke test",
+		"prompt":      "请只回复 TEAMMATE_CLI_OK，不做文件修改。",
+	}
+	for _, tool := range tools {
+		if !strings.EqualFold(strings.TrimSpace(tool.Type), "function") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(tool.Name), strings.TrimSpace(toolName)) {
+			continue
+		}
+		props := toolProperties(tool.Parameters)
+		if _, ok := props["subagent_type"]; ok && strings.TrimSpace(subagentType) != "" {
+			args["subagent_type"] = subagentType
+		}
+		return args
+	}
+	args["subagent_type"] = subagentType
+	return args
+}
+
+func requiredFieldSet(params map[string]any) map[string]struct{} {
+	required := make(map[string]struct{})
+	requiredRaw, ok := params["required"]
+	if !ok {
+		return required
+	}
+	requiredItems, ok := requiredRaw.([]any)
+	if !ok {
+		return required
+	}
+	for _, v := range requiredItems {
+		s, _ := v.(string)
+		s = strings.TrimSpace(s)
+		if s != "" {
+			required[s] = struct{}{}
+		}
+	}
+	return required
+}
+
+func toolProperties(params map[string]any) map[string]any {
+	propsRaw, ok := params["properties"]
+	if !ok {
+		return nil
+	}
+	props, ok := propsRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return props
+}
+
+func isClaudeBootstrapToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.EqualFold(name, "Task") || strings.EqualFold(name, "Agent")
 }

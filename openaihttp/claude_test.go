@@ -496,20 +496,99 @@ func TestClaudeMessages_Stream_ToolUse(t *testing.T) {
 }
 
 func TestClaudeMessages_Stream_TaskToolUse_ProtocolInputJSONDelta(t *testing.T) {
+	assertStreamToolUseProtocolInputJSONDelta(t, streamToolUseProtocolTestCase{
+		toolName: "Task",
+		toolArgs: `{
+			"description":"Simplify recent code changes",
+			"prompt":"请作为 code-simplifier 进行精简优化",
+			"subagent_type":"code-simplifier:code-simplifier",
+			"max_turns":40
+		}`,
+		requestBody: `{
+			"model":"gpt-5.1",
+			"messages":[{"role":"user","content":"使用 code-simplifier 优化代码"}],
+			"stream":true,
+			"max_tokens":1024,
+			"tools":[
+				{
+					"name":"Task",
+					"description":"Task runner",
+					"input_schema":{
+						"type":"object",
+						"properties":{
+							"description":{"type":"string"},
+							"prompt":{"type":"string"},
+							"subagent_type":{"type":"string"}
+						},
+						"required":["description","prompt","subagent_type"]
+					}
+				}
+			]
+		}`,
+		expected: map[string]any{
+			"description":   "Simplify recent code changes",
+			"prompt":        "请作为 code-simplifier 进行精简优化",
+			"subagent_type": "code-simplifier:code-simplifier",
+		},
+	})
+}
+
+func TestClaudeMessages_Stream_AgentToolUse_ProtocolInputJSONDelta(t *testing.T) {
+	assertStreamToolUseProtocolInputJSONDelta(t, streamToolUseProtocolTestCase{
+		toolName: "Agent",
+		toolArgs: `{
+			"description":"Delegate sub task",
+			"prompt":"请只回复 AGENT_OK",
+			"subagent_type":"general-purpose"
+		}`,
+		requestBody: `{
+			"model":"gpt-5.1",
+			"messages":[{"role":"user","content":"调用 agent 工具"}],
+			"stream":true,
+			"max_tokens":1024,
+			"tools":[
+				{
+					"name":"Agent",
+					"description":"Agent runner",
+					"input_schema":{
+						"type":"object",
+						"properties":{
+							"description":{"type":"string"},
+							"prompt":{"type":"string"},
+							"subagent_type":{"type":"string"}
+						},
+						"required":["description","prompt"]
+					}
+				}
+			]
+		}`,
+		expected: map[string]any{
+			"description":   "Delegate sub task",
+			"prompt":        "请只回复 AGENT_OK",
+			"subagent_type": "general-purpose",
+		},
+	})
+}
+
+type streamToolUseProtocolTestCase struct {
+	toolName    string
+	toolArgs    string
+	requestBody string
+	expected    map[string]any
+}
+
+func assertStreamToolUseProtocolInputJSONDelta(t *testing.T, tc streamToolUseProtocolTestCase) {
+	t.Helper()
+
 	h, err := newClaudeCompatHandler(claudeCompatConfig{
 		Now: time.Now,
 		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
 			if toolCallHandler != nil {
 				toolCallHandler(&backend.ToolCall{
-					ID:   "call_task_protocol",
-					Name: "Task",
-					Arguments: `{
-						"description":"Simplify recent code changes",
-						"prompt":"请作为 code-simplifier 进行精简优化",
-						"subagent_type":"code-simplifier:code-simplifier",
-						"max_turns":40
-					}`,
-					Status: "completed",
+					ID:        "call_protocol",
+					Name:      tc.toolName,
+					Arguments: tc.toolArgs,
+					Status:    "completed",
 				})
 			}
 			return &stubChatModel{streamMsgs: []*schema.Message{}}, nil
@@ -519,27 +598,7 @@ func TestClaudeMessages_Stream_TaskToolUse_ProtocolInputJSONDelta(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{
-		"model":"gpt-5.1",
-		"messages":[{"role":"user","content":"使用 code-simplifier 优化代码"}],
-		"stream":true,
-		"max_tokens":1024,
-		"tools":[
-			{
-				"name":"Task",
-				"description":"Task runner",
-				"input_schema":{
-					"type":"object",
-					"properties":{
-						"description":{"type":"string"},
-						"prompt":{"type":"string"},
-						"subagent_type":{"type":"string"}
-					},
-					"required":["description","prompt","subagent_type"]
-				}
-			}
-		]
-	}`)
+	body := []byte(tc.requestBody)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -547,11 +606,11 @@ func TestClaudeMessages_Stream_TaskToolUse_ProtocolInputJSONDelta(t *testing.T) 
 	require.Equal(t, http.StatusOK, w.Code)
 
 	events := parseClaudeSSEEvents(t, w.Body.String())
-	require.True(t, hasInputJSONDeltaForTool(t, events, "Task"))
-	input := firstToolUseInputByName(t, events, "Task")
-	require.Equal(t, "Simplify recent code changes", input["description"])
-	require.Equal(t, "请作为 code-simplifier 进行精简优化", input["prompt"])
-	require.Equal(t, "code-simplifier:code-simplifier", input["subagent_type"])
+	require.True(t, hasInputJSONDeltaForTool(t, events, tc.toolName))
+	input := firstToolUseInputByName(t, events, tc.toolName)
+	for key, want := range tc.expected {
+		require.Equal(t, want, input[key])
+	}
 }
 
 func TestClaudeMessages_Stream_TaskToolUseSkipsEmptyArguments(t *testing.T) {
@@ -735,7 +794,7 @@ func TestToolCallArgumentsForClaudeStream_RequiresCompletedAndJSONObject(t *test
 		Status:    "completed",
 	}, lastArgs)
 	require.True(t, ok)
-	require.Equal(t, `{"path":"README.md"}`, args)
+	require.JSONEq(t, `{"path":"README.md"}`, args)
 
 	_, ok = toolCallArgumentsForClaudeStream(&backend.ToolCall{
 		ID:        "call_2",

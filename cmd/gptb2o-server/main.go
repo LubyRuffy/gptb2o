@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,23 +16,58 @@ import (
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/auth"
 	"github.com/LubyRuffy/gptb2o/openaihttp"
+	"github.com/LubyRuffy/gptb2o/trace"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string, stdout io.Writer) error {
 	var (
-		listen          = flag.String("listen", "127.0.0.1:8080", "listen address")
-		basePath        = flag.String("base-path", "/v1", "base path prefix")
-		backendURL      = flag.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
-		authSource      = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
-		originator      = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
-		reasoningEffort = flag.String("reasoning-effort", "", "default reasoning effort forwarded to backend (e.g. low|medium|high)")
+		flagSet         = flag.NewFlagSet("gptb2o-server", flag.ContinueOnError)
+		listen          = flagSet.String("listen", "127.0.0.1:12345", "listen address")
+		basePath        = flagSet.String("base-path", "/v1", "base path prefix")
+		backendURL      = flagSet.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
+		authSource      = flagSet.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
+		originator      = flagSet.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
+		reasoningEffort = flagSet.String("reasoning-effort", "", "default reasoning effort forwarded to backend (e.g. low|medium|high)")
+		traceDBPath     = flagSet.String("trace-db-path", "", "sqlite path for full-chain tracing")
+		traceMaxBody    = flagSet.Int("trace-max-body-bytes", 64<<10, "max body bytes stored per trace event")
+		showInteraction = flagSet.String("show-interaction", "", "print a traced interaction by id and exit")
 	)
-	flag.Parse()
+	flagSet.SetOutput(io.Discard)
+	if err := flagSet.Parse(args); err != nil {
+		return err
+	}
+
+	var tracer *trace.Tracer
+	if strings.TrimSpace(*traceDBPath) != "" {
+		store, err := trace.OpenStore(*traceDBPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = store.Close() }()
+		tracer = trace.NewTracer(store, trace.TracerOptions{MaxBodyBytes: *traceMaxBody})
+		if interactionID := strings.TrimSpace(*showInteraction); interactionID != "" {
+			interaction, events, err := store.GetInteraction(interactionID)
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(stdout, trace.FormatInteractionReport(interaction, events))
+			return err
+		}
+	} else if strings.TrimSpace(*showInteraction) != "" {
+		return fmt.Errorf("trace-db-path is required when show-interaction is set")
+	}
 
 	provider, err := auth.NewProvider(*authSource)
 	if err != nil {
-		log.Fatalf("invalid auth-source: %v", err)
+		return fmt.Errorf("invalid auth-source: %w", err)
 	}
 
 	r := gin.New()
@@ -41,12 +78,13 @@ func main() {
 		BackendURL:      *backendURL,
 		Originator:      *originator,
 		ReasoningEffort: *reasoningEffort,
+		Tracer:          tracer,
 		AuthProvider: func(ctx context.Context) (string, string, error) {
 			return provider.Auth(ctx)
 		},
 	})
 	if err != nil {
-		log.Fatalf("register routes failed: %v", err)
+		return fmt.Errorf("register routes failed: %w", err)
 	}
 
 	srv := &http.Server{
@@ -64,10 +102,14 @@ func main() {
 	log.Printf("OpenAI SDK base_url: http://%s%s", exampleAddr, *basePath)
 	log.Printf("try: curl http://%s%s/messages -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}'", exampleAddr, *basePath, gptb2o.DefaultModelFullID)
 	log.Printf("Claude Code base_url: http://%s%s", exampleAddr, *basePath)
+	if strings.TrimSpace(*traceDBPath) != "" {
+		log.Printf("trace db: %s", *traceDBPath)
+	}
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Println(err)
+		return err
 	}
+	return nil
 }
 
 func addrForLocalClient(listen string) string {

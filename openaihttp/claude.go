@@ -33,19 +33,20 @@ type claudeCompatHandler struct {
 }
 
 type claudeMessagesRequest struct {
-	Model         string             `json:"model"`
-	Messages      []claudeMessage    `json:"messages"`
-	System        claudeContentField `json:"system,omitempty"`
-	Stream        bool               `json:"stream"`
-	MaxTokens     int                `json:"max_tokens"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []claudeTool       `json:"tools,omitempty"`
-	ToolChoice    *claudeToolChoice  `json:"tool_choice,omitempty"`
-	Thinking      map[string]any     `json:"thinking,omitempty"`
-	Metadata      map[string]any     `json:"metadata,omitempty"`
-	Temperature   *float32           `json:"temperature,omitempty"`
-	TopP          *float32           `json:"top_p,omitempty"`
-	TopK          *int               `json:"top_k,omitempty"`
+	Model         string              `json:"model"`
+	Messages      []claudeMessage     `json:"messages"`
+	System        claudeContentField  `json:"system,omitempty"`
+	Stream        bool                `json:"stream"`
+	MaxTokens     int                 `json:"max_tokens"`
+	StopSequences []string            `json:"stop_sequences,omitempty"`
+	Tools         []claudeTool        `json:"tools,omitempty"`
+	ToolChoice    *claudeToolChoice   `json:"tool_choice,omitempty"`
+	Thinking      map[string]any      `json:"thinking,omitempty"`
+	OutputConfig  *claudeOutputConfig `json:"output_config,omitempty"`
+	Metadata      map[string]any      `json:"metadata,omitempty"`
+	Temperature   *float32            `json:"temperature,omitempty"`
+	TopP          *float32            `json:"top_p,omitempty"`
+	TopK          *int                `json:"top_k,omitempty"`
 }
 
 type claudeMessage struct {
@@ -63,6 +64,10 @@ type claudeToolChoice struct {
 	Type                   string `json:"type"`
 	Name                   string `json:"name,omitempty"`
 	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
+}
+
+type claudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type claudeContentField struct {
@@ -235,6 +240,10 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	inputTokens := estimateClaudeInputTokens(chatInput, tools)
+	outputEffort := ""
+	if req.OutputConfig != nil {
+		outputEffort = normalizeReasoningEffort(req.OutputConfig.Effort)
+	}
 
 	if req.Stream {
 		ctx, cancel := context.WithCancel(r.Context())
@@ -254,7 +263,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 			h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
 			return
 		}
-		chatModel = applyClaudeSamplingParams(chatModel, req.Temperature, req.TopP)
+		chatModel = applyClaudeRequestOptions(chatModel, req.Temperature, req.TopP, outputEffort)
 		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, disableParallelToolUse, toolCallChan)
 		return
 	}
@@ -276,7 +285,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, httpStatusFromError(err), httpMessageFromError(err))
 		return
 	}
-	chatModel = applyClaudeSamplingParams(chatModel, req.Temperature, req.TopP)
+	chatModel = applyClaudeRequestOptions(chatModel, req.Temperature, req.TopP, outputEffort)
 
 	respMsg, err := chatModel.Generate(r.Context(), chatInput)
 	if err != nil {
@@ -337,13 +346,16 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	h.writeJSON(w, resp)
 }
 
-func applyClaudeSamplingParams(m chatModel, temperature *float32, topP *float32) chatModel {
+func applyClaudeRequestOptions(m chatModel, temperature *float32, topP *float32, reasoningEffort string) chatModel {
 	if m == nil {
 		return nil
 	}
 	backendModel, ok := m.(*backend.ChatModel)
 	if !ok {
 		return m
+	}
+	if strings.TrimSpace(reasoningEffort) != "" {
+		backendModel = backendModel.WithReasoningEffort(reasoningEffort)
 	}
 	if temperature != nil {
 		backendModel = backendModel.WithTemperature(temperature)
@@ -1168,7 +1180,7 @@ func debugClaudeTaskToolSchema(tools []claudeTool) {
 	}
 	for _, t := range tools {
 		name := strings.TrimSpace(t.Name)
-		if !strings.EqualFold(name, "Task") {
+		if !isClaudeBootstrapTool(name) {
 			continue
 		}
 		required := ""
@@ -1181,7 +1193,7 @@ func debugClaudeTaskToolSchema(tools []claudeTool) {
 		if propsRaw, ok := t.InputSchema["properties"].(map[string]any); ok {
 			propsCount = len(propsRaw)
 		}
-		log.Printf("[gptb2o][claude-tools] task schema: props=%d required=%s", propsCount, required)
+		log.Printf("[gptb2o][claude-tools] bootstrap schema: tool=%s props=%d required=%s", name, propsCount, required)
 	}
 }
 
@@ -1189,11 +1201,11 @@ func debugClaudeTaskToolCall(name string, callID string, args string, status str
 	if os.Getenv("GPTB2O_DEBUG_CLAUDE_TOOLS") != "1" {
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(name), "Task") {
+	if !isClaudeBootstrapTool(name) {
 		return
 	}
 	trimmed := strings.TrimSpace(args)
-	log.Printf("[gptb2o][claude-tools] task call: id=%s status=%s args=%q", strings.TrimSpace(callID), strings.TrimSpace(status), trimmed)
+	log.Printf("[gptb2o][claude-tools] bootstrap call: tool=%s id=%s status=%s args=%q", strings.TrimSpace(name), strings.TrimSpace(callID), strings.TrimSpace(status), trimmed)
 }
 
 func normalizeClaudeModel(model string) string {

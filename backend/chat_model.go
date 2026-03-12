@@ -125,6 +125,12 @@ func (m *ChatModel) WithTopP(v *float32) *ChatModel {
 	return &cloned
 }
 
+func (m *ChatModel) WithReasoningEffort(effort string) *ChatModel {
+	cloned := *m
+	cloned.config.ReasoningEffort = NormalizeReasoningEffort(effort)
+	return &cloned
+}
+
 func (m *ChatModel) WithToolCallHandler(handler func(*ToolCall)) *ChatModel {
 	cloned := *m
 	cloned.toolCallHandler = handler

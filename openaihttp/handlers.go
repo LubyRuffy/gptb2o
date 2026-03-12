@@ -10,6 +10,7 @@ import (
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
+	"github.com/LubyRuffy/gptb2o/trace"
 )
 
 const defaultSystemFingerprint = "fp_gptb2o"
@@ -36,6 +37,11 @@ func Handlers(cfg Config) (modelsHandler http.HandlerFunc, chatHandler http.Hand
 	modelsHandler = compat.handleModels
 	chatHandler = compat.handleChatCompletions
 	responsesHandler = newResponsesHandler(resolved)
+	if resolved.Tracer != nil {
+		modelsHandler = wrapWithTracer(resolved.Tracer, modelsHandler)
+		chatHandler = wrapWithTracer(resolved.Tracer, chatHandler)
+		responsesHandler = wrapWithTracer(resolved.Tracer, responsesHandler)
+	}
 	return modelsHandler, chatHandler, responsesHandler, nil
 }
 
@@ -53,6 +59,9 @@ func ClaudeMessagesHandler(cfg Config) (http.HandlerFunc, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resolved.Tracer != nil {
+		return wrapWithTracer(resolved.Tracer, h.handleMessages), nil
+	}
 	return h.handleMessages, nil
 }
 
@@ -69,6 +78,9 @@ func ClaudeCountTokensHandler(cfg Config) (http.HandlerFunc, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if resolved.Tracer != nil {
+		return wrapWithTracer(resolved.Tracer, h.handleCountTokens), nil
 	}
 	return h.handleCountTokens, nil
 }
@@ -124,6 +136,7 @@ type resolvedConfig struct {
 	Originator        string
 	ReasoningEffort   string
 	SystemFingerprint string
+	Tracer            *trace.Tracer
 }
 
 func resolveConfig(cfg Config) (resolvedConfig, error) {
@@ -139,6 +152,11 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{}
+	}
+	if cfg.Tracer != nil {
+		cloned := *client
+		cloned.Transport = cfg.Tracer.WrapTransport(client.Transport)
+		client = &cloned
 	}
 
 	originator := strings.TrimSpace(cfg.Originator)
@@ -160,5 +178,16 @@ func resolveConfig(cfg Config) (resolvedConfig, error) {
 		Originator:        originator,
 		ReasoningEffort:   reasoningEffort,
 		SystemFingerprint: fp,
+		Tracer:            cfg.Tracer,
 	}, nil
+}
+
+func wrapWithTracer(tracer *trace.Tracer, handler http.HandlerFunc) http.HandlerFunc {
+	if tracer == nil || handler == nil {
+		return handler
+	}
+	wrapped := tracer.WrapHTTP(handler)
+	return func(w http.ResponseWriter, r *http.Request) {
+		wrapped.ServeHTTP(w, r)
+	}
 }

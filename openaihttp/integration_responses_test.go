@@ -279,3 +279,62 @@ func TestIntegration_ClaudeMessages_ReasoningEffort_FromConfig(t *testing.T) {
 
 	require.Equal(t, int32(1), atomic.LoadInt32(&gotBackendRequest))
 }
+
+func TestIntegration_ClaudeMessages_ReasoningEffort_FromOutputConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var gotBackendRequest int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&gotBackendRequest, 1)
+		defer r.Body.Close()
+
+		var payload struct {
+			Model     string `json:"model"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, "gpt-5.3-codex", payload.Model)
+		require.Equal(t, "medium", payload.Reasoning.Effort)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	r := gin.New()
+	require.NoError(t, openaihttp.RegisterGinRoutes(r, openaihttp.Config{
+		BasePath:   "/v1",
+		BackendURL: backend.URL,
+		HTTPClient: backend.Client(),
+		Originator: "integration-test",
+		AuthProvider: func(ctx context.Context) (string, string, error) {
+			return "token", "acc", nil
+		},
+	}))
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	reqBody := []byte(`{
+  "model":"chatgpt/codex/gpt-5.3-codex",
+  "messages":[{"role":"user","content":"hi"}],
+  "stream":false,
+  "max_tokens":1024,
+  "output_config":{"effort":"medium"}
+}`)
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(body, &out))
+	require.Equal(t, "message", out["type"])
+
+	require.Equal(t, int32(1), atomic.LoadInt32(&gotBackendRequest))
+}

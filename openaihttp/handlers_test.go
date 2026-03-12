@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/LubyRuffy/gptb2o/backend"
 	"github.com/LubyRuffy/gptb2o/openaiapi"
 	"github.com/LubyRuffy/gptb2o/openaihttp"
+	"github.com/LubyRuffy/gptb2o/trace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,6 +192,47 @@ func TestResponses_StreamTrue_OfficialSSE_NoDONE(t *testing.T) {
 	require.Contains(t, out, "event: response.output_text.delta\n")
 	require.Contains(t, out, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n")
 	require.NotContains(t, out, "data: [DONE]\n")
+}
+
+func TestResponses_Tracing_AddsInteractionIDAndPersistsEvents(t *testing.T) {
+	traceStore, err := trace.OpenStore(filepath.Join(t.TempDir(), "trace.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, traceStore.Close()) })
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_trace\",\"object\":\"response\",\"model\":\"gpt-5.3-codex\"}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(backend.Close)
+
+	_, _, responsesHandler, err := openaihttp.Handlers(openaihttp.Config{
+		BackendURL:   backend.URL,
+		HTTPClient:   backend.Client(),
+		AuthProvider: func(ctx context.Context) (string, string, error) { return "token", "acc", nil },
+		Tracer:       trace.NewTracer(traceStore, trace.TracerOptions{MaxBodyBytes: 1024}),
+	})
+	require.NoError(t, err)
+
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.3-codex"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	responsesHandler(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	interactionID := w.Header().Get(trace.InteractionIDHeader)
+	require.NotEmpty(t, interactionID)
+
+	interaction, events, err := traceStore.GetInteraction(interactionID)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, interaction.StatusCode)
+	require.GreaterOrEqual(t, len(events), 4)
+	require.Equal(t, trace.EventClientRequest, events[0].Kind)
+	require.Equal(t, trace.EventBackendRequest, events[1].Kind)
+	require.Equal(t, trace.EventBackendResponse, events[2].Kind)
+	require.Equal(t, trace.EventClientResponse, events[len(events)-1].Kind)
 }
 
 func TestResponses_StreamFalse_ReturnCompletedResponse(t *testing.T) {

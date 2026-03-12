@@ -3,6 +3,8 @@ package openaihttp
 import (
 	"context"
 	"net/http"
+
+	"github.com/LubyRuffy/gptb2o/trace"
 )
 
 // AuthProvider 提供访问 ChatGPT backend 所需的认证信息。
@@ -25,4 +27,6 @@ type Config struct {
 	ReasoningEffort string
 	// SystemFingerprint chat.completions 用；默认 "fp_gptb2o"。
 	SystemFingerprint string
+	// Tracer 可选，启用后会记录客户端与 backend 的全链路请求/响应。
+	Tracer *trace.Tracer
 }

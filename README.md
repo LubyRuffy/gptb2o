@@ -1,96 +1,91 @@
 # gptb2o
 
-`gptb2o` = **ChatGPT Backend API** to **OpenAI Compatible API**。
+`gptb2o` 把 ChatGPT backend responses SSE 接口包装成 OpenAI 兼容 `/v1/*` API，同时兼容 Claude Messages 路径，方便本地工具、SDK、Claude Code、Eino/ADK 直接复用。
 
-核心目标：
-1. 基于 **OAuth token** 直连 `chatgpt.com` 的 backend responses SSE 接口，对外暴露 OpenAI 兼容 `/v1/*`，方便其它程序/SDK 直接用。
-2. 提供一个可供 **CloudWeGo Eino / ADK** 使用的最小 SDK（ToolCallingChatModel）。
+## 项目简介
 
-## 安全与合规提示
+- 通过本地 OAuth token 直连 `https://chatgpt.com/backend-api/codex/responses`
+- 对外提供 OpenAI 兼容端点：`/v1/models`、`/v1/chat/completions`、`/v1/responses`
+- 提供 Claude 兼容端点：`/v1/messages`、`/v1/messages/count_tokens`
+- 支持 `reasoning.effort` 和 Claude `output_config.effort`
+- 支持 Claude 新旧 teammate 协议透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
+- 支持 SQLite 全链路追踪，可凭 `interaction_id` 回放一次请求
 
-- 你需要自行从本地客户端（例如 Codex/OpenCode）已登录后的 token 文件中读取 OAuth token。
-- **不要把 token 提交到代码仓库**，也不要把本服务暴露到公网。
-- 对 ChatGPT backend 的调用可能受到服务端策略影响；请自行评估使用风险与合规性。
+相关文档：
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [docs/API.md](docs/API.md)
+- [docs/CLI.md](docs/CLI.md)
+- [docs/CONFIG.md](docs/CONFIG.md)
+- [docs/DATA_MODEL.md](docs/DATA_MODEL.md)
+- [docs/TESTING.md](docs/TESTING.md)
+- [CHANGELOG.md](CHANGELOG.md)
 
-## 认证来源（默认 codex）
+## 安全提示
 
-支持 4 种来源（通过 `--auth-source` 选择）：
-- `codex`：`~/.codex/auth.json`（默认）
+- token 来自你本机已登录客户端的本地文件或环境变量。
+- 不要把 token、trace 数据库、请求日志提交到代码仓库。
+- 不要把服务直接暴露到公网。
+
+## 快速启动
+
+### 1. 选择认证来源
+
+支持 4 种来源：
+- `codex`：`~/.codex/auth.json`
 - `opencode`：`~/.local/share/opencode/auth.json`
-- `env`：环境变量 `GPTB2O_ACCESS_TOKEN`、`GPTB2O_ACCOUNT_ID`
-- `auto`：按顺序尝试 `codex -> opencode -> env`
+- `env`：`GPTB2O_ACCESS_TOKEN`、`GPTB2O_ACCOUNT_ID`
+- `auto`：按 `codex -> opencode -> env` 顺序尝试
 
-## 命令行
-
-### 1) 启动 OpenAI 兼容 HTTP server
+### 2. 启动本地服务
 
 ```bash
 go run ./cmd/gptb2o-server --auth-source codex
 ```
 
-默认监听：`127.0.0.1:8080`，默认 base path：`/v1`
+默认监听地址是 `127.0.0.1:12345`，默认 base path 是 `/v1`。
 
-验证：
+### 3. 验证 OpenAI 兼容接口
+
 ```bash
-curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:12345/v1/models
 
-curl http://127.0.0.1:8080/v1/responses \\
-  -H 'Content-Type: application/json' \\
+curl http://127.0.0.1:12345/v1/responses \
+  -H 'Content-Type: application/json' \
   -d '{"model":"chatgpt/codex/gpt-5.4","input":"hi","stream":false}'
-
-# 指定默认 reasoning effort（会透传到 backend 的 reasoning.effort）
-go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort medium
 ```
 
-### 2) 最小 ADK demo（SDK 验证）
+### 4. 启用全链路追踪
 
 ```bash
-go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.4 --input "你好"
-
-# ADK demo 也支持指定 reasoning effort
-go run ./cmd/gptb2o-adk --auth-source codex --model chatgpt/codex/gpt-5.4 --reasoning-effort high --input "你好"
+go run ./cmd/gptb2o-server \
+  --auth-source codex \
+  --trace-db-path ./artifacts/traces/gptb2o-trace.db
 ```
 
-## OpenAI 兼容端点
-
-- `GET  /v1/models`
-- `POST /v1/chat/completions`（支持 stream；流式以 `data: ...` + `data: [DONE]` 结束）
-- `POST /v1/responses`（官方推荐）
-  - `stream=true`：输出官方 SSE（`event:` + `data:`），并且不透传 backend 的 `data: [DONE]`
-  - `stream=false`：从 backend SSE 的 `response.completed.response` 提取最终 JSON 返回
-  - 支持 `reasoning.effort` 透传（请求级）；若未传可用服务启动参数 `--reasoning-effort` 作为默认值
-- `POST /v1/messages`（Claude Code / Anthropic 官方路径）
-  - 入参兼容 Claude Messages API 的 `model/messages/system/stream/max_tokens/tools`
-  - 支持 `tool_use` / `tool_result` 往返，便于 Claude Code 连续执行工具调用
-  - `stream=true`：返回 Claude 风格 SSE（`message_start/content_block_delta/.../message_stop`）
-  - `stream=false`：返回 Claude 风格 `message` JSON
-
-## Claude Code 配置与使用说明
-
-### 1) 启动本地服务
+复现问题后，从响应头拿到 `X-GPTB2O-Interaction-ID`，再回放：
 
 ```bash
-go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-path /v1
-
-# 如果需要固定推理强度（不依赖 Claude 客户端的 effort 档位）
-go run ./cmd/gptb2o-server --auth-source codex --listen 127.0.0.1:12345 --base-path /v1 --reasoning-effort medium
+go run ./cmd/gptb2o-server \
+  --trace-db-path ./artifacts/traces/gptb2o-trace.db \
+  --show-interaction ia_example
 ```
 
-### 2) Claude CLI 启动方式（推荐）
+## 使用示例
+
+### OpenAI `/v1/responses`
 
 ```bash
-ANTHROPIC_BASE_URL=http://localhost:12345 \
-ANTHROPIC_API_KEY=local-dev \
-claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
+curl http://127.0.0.1:12345/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"chatgpt/codex/gpt-5.4",
+    "input":"解释一下当前仓库做什么",
+    "stream":false,
+    "reasoning":{"effort":"medium"}
+  }'
 ```
 
-说明：
-- 上面这条命令会请求 `POST /v1/messages`，因此服务端建议保持 `--base-path /v1`。
-- `--setting-sources project,local` + 非空 `ANTHROPIC_API_KEY` 可强制 Claude CLI 走 API Key 配置源。
-- 若不加上述参数，Claude CLI 可能优先走 OAuth 通道，导致不会命中你配置的 `ANTHROPIC_BASE_URL`。
-- Claude `/model` 菜单里的 `Effort not supported` 是客户端提示；可通过服务端 `--reasoning-effort` 指定默认推理强度。
-
-### 3) 最小请求验证（等价于 Claude Code 发出的 Messages 调用）
+### Claude `/v1/messages`
 
 ```bash
 curl http://127.0.0.1:12345/v1/messages \
@@ -99,21 +94,46 @@ curl http://127.0.0.1:12345/v1/messages \
     "model":"gpt-5.4",
     "max_tokens":1024,
     "stream":false,
+    "output_config":{"effort":"medium"},
     "messages":[{"role":"user","content":"请用一句话介绍 gptb2o"}]
   }'
 ```
 
-如果返回 `type=message` 且 `content[0].text` 有内容，说明 Claude Code 侧可按相同参数工作。
+### Claude CLI
 
-### 4) Claude teammate 集成测试（默认跳过）
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:12345 \
+ANTHROPIC_API_KEY=local-dev \
+claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
+```
 
-该用例会启动：
-- fake backend（模拟 `Task` tool_use + tool_result 往返）
-- gptb2o 本地服务（`/v1/messages`）
-- Claude CLI（真实命令行）
+说明：
+- Claude CLI 推荐保留 `--setting-sources project,local`，否则可能优先走 OAuth 通道。
+- `/v1/messages` 已兼容 `output_config.effort`。
+- teammate / agent teams 场景已支持新旧工具协议透传，不再只依赖旧 `Task`。
 
-并验证不会出现 `Invalid tool parameters`。
+### Eino / ADK demo
 
+```bash
+go run ./cmd/gptb2o-adk \
+  --auth-source codex \
+  --model chatgpt/codex/gpt-5.4 \
+  --input "你好"
+```
+
+## 常见使用方式
+
+- 固定默认推理强度：
+```bash
+go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort high
+```
+
+- 控制 trace body 落库大小：
+```bash
+go run ./cmd/gptb2o-server --trace-db-path ./artifacts/traces/gptb2o-trace.db --trace-max-body-bytes 32768
+```
+
+- 运行 Claude teammate 真实集成测试：
 ```bash
 GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 ```

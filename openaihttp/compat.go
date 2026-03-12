@@ -363,11 +363,13 @@ func toolCallArgumentsForStream(call *backend.ToolCall, lastArgs map[string]stri
 		if err := json.Unmarshal([]byte(args), &input); err != nil || len(input) == 0 {
 			return "", false
 		}
-		if requiresTaskCoreFields(toolName) &&
-			(!hasNonEmptyStringField(input, "description") ||
-				!hasNonEmptyStringField(input, "prompt") ||
-				!hasNonEmptyStringField(input, "subagent_type")) {
-			return "", false
+		if requiresTaskCoreFields(toolName) {
+			if !hasNonEmptyStringField(input, "description") || !hasNonEmptyStringField(input, "prompt") {
+				return "", false
+			}
+			if strings.EqualFold(strings.TrimSpace(toolName), "Task") && !hasNonEmptyStringField(input, "subagent_type") {
+				return "", false
+			}
 		}
 	}
 	if prev, ok := lastArgs[callID]; ok && prev == args {
@@ -394,19 +396,24 @@ func normalizeJSONArgumentString(raw string) string {
 }
 
 func requiresNonEmptyToolArguments(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "Task")
+	return isClaudeBootstrapTool(name)
 }
 
 func requiresCompletedToolCall(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "Task")
+	return isClaudeBootstrapTool(name)
 }
 
 func requiresJSONObjectToolArguments(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "Task")
+	return isClaudeBootstrapTool(name)
 }
 
 func requiresTaskCoreFields(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "Task")
+	return isClaudeBootstrapTool(name)
+}
+
+func isClaudeBootstrapTool(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.EqualFold(name, "Task") || strings.EqualFold(name, "Agent")
 }
 
 func hasNonEmptyStringField(input map[string]any, key string) bool {

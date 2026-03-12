@@ -1,0 +1,77 @@
+# Architecture
+
+## 系统整体架构
+
+`gptb2o` 由 5 个核心层组成：
+
+1. `cmd/gptb2o-server`
+   对外提供本地 HTTP 服务，暴露 OpenAI 与 Claude 兼容接口。
+2. `openaihttp`
+   负责协议兼容、请求校验、路由注册、SSE 转换、错误格式转换。
+3. `backend`
+   负责构造 ChatGPT backend 请求、读取 backend SSE、处理重试和工具调用事件。
+4. `auth`
+   从 `codex`、`opencode`、环境变量等来源读取 access token/account id。
+5. `trace`
+   负责生成 `interaction_id`、记录全链路请求响应、输出回放报告。
+
+## 核心模块
+
+### `openaihttp`
+
+- 统一注册 `/v1/models`、`/v1/chat/completions`、`/v1/responses`
+- 提供 Claude 兼容路径 `/v1/messages`、`/v1/messages/count_tokens`
+- 把 Claude `output_config.effort` 映射到 backend `reasoning.effort`
+- 透传 Claude 工具定义与 tool_use/tool_result 往返
+- 对 teammate 协议兼容 `Agent` / `TaskOutput` / `TaskStop` / `Task`
+
+### `backend`
+
+- `ChatModel` 负责构造 backend payload
+- 统一处理 `instructions`、`reasoning.effort`、温度参数、工具定义
+- 读取 backend SSE 并还原文本输出与 function call
+- 对不支持的 `xhigh` effort 和不支持的 tool type 做降级重试
+
+### `trace`
+
+- 在入口 HTTP handler 处记录 `client_request` / `client_response`
+- 在 outbound `HTTPClient.Transport` 处记录 `backend_request` / `backend_response`
+- 把一次交互聚合到同一个 `interaction_id`
+- 通过 SQLite 持久化，支持 `--show-interaction <id>` 输出完整链路
+
+## 请求流
+
+### OpenAI 兼容请求
+
+1. 客户端请求 `gptb2o-server`
+2. `openaihttp` 解析 OpenAI 请求并创建 `backend.ChatModel`
+3. `backend` 调用 ChatGPT responses SSE
+4. `openaihttp` 把 backend 响应转成 OpenAI JSON 或 SSE
+5. `trace` 记录客户端与 backend 的四段链路
+
+### Claude Messages 请求
+
+1. Claude CLI 或其他 Anthropic 客户端请求 `/v1/messages`
+2. `openaihttp/claude.go` 解析 `model/messages/tools/output_config`
+3. 工具 schema 原样透传到 backend function tools
+4. backend 的 function call 事件被转成 Claude `tool_use`
+5. 用户的 `tool_result` 再被还原成 backend `function_call_output`
+
+## 数据流
+
+一次完整交互默认按如下顺序落库：
+
+1. `client_request`
+2. `backend_request`
+3. `backend_response`
+4. `client_response`
+
+当出现 backend 重试时，同一 `interaction_id` 下会出现多次 `backend_request` / `backend_response`。
+
+## 一键排障链路
+
+1. 服务开启 `--trace-db-path`
+2. 客户端收到响应头 `X-GPTB2O-Interaction-ID`
+3. 用户提供该 `interaction_id`
+4. 执行 `gptb2o-server --trace-db-path ... --show-interaction <id>`
+5. 服务输出交互总览和完整事件明细

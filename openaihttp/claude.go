@@ -89,6 +89,19 @@ type claudeContentBlock struct {
 	Content   json.RawMessage `json:"content,omitempty"`
 }
 
+const claudePendingTeamMailboxReminder = `<system-reminder>
+Teammates were just spawned and concrete mailbox results have not arrived yet.
+Wait for teammate mailbox messages with concrete results before answering.
+Do not answer with placeholder aggregates such as {"results":[]} or {"workers":[]}.
+Do not finalize the response or start shutdown until the expected teammate mailbox results are available.
+</system-reminder>`
+
+const claudePendingTeamShutdownReminder = `<system-reminder>
+Team shutdown has started but not all shutdown approvals have arrived yet.
+Wait for teammate mailbox messages with shutdown approvals before finalizing the response.
+Do not finalize the response or clean up the team until the expected shutdown approvals are available.
+</system-reminder>`
+
 type claudeMessageResponse struct {
 	ID           string               `json:"id"`
 	Type         string               `json:"type"`
@@ -239,6 +252,14 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	pendingTeamMailboxReminder, err := claudePendingTeamMailboxReminderText(req.Messages)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if pendingTeamMailboxReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
+	}
 	inputTokens := estimateClaudeInputTokens(chatInput, tools)
 	outputEffort := ""
 	if req.OutputConfig != nil {
@@ -264,7 +285,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		chatModel = applyClaudeRequestOptions(chatModel, req.Temperature, req.TopP, outputEffort)
-		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, disableParallelToolUse, toolCallChan)
+		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, pendingTeamMailboxReminder != "", disableParallelToolUse, toolCallChan)
 		return
 	}
 
@@ -320,6 +341,8 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	stopSequence := (*string)(nil)
 	if hasToolUse {
 		stopReason = "tool_use"
+	} else if pendingTeamMailboxReminder != "" && strings.TrimSpace(limitedText) == "" && limitStopReason == "" {
+		stopReason = "pause_turn"
 	} else if limitStopReason != "" {
 		stopReason = limitStopReason
 		stopSequence = limitStopSequence
@@ -400,6 +423,14 @@ func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	pendingTeamMailboxReminder, err := claudePendingTeamMailboxReminderText(req.Messages)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if pendingTeamMailboxReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
+	}
 
 	h.writeJSON(w, claudeCountTokensResponse{
 		InputTokens: estimateClaudeInputTokens(chatInput, tools),
@@ -416,6 +447,7 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	inputTokens int,
 	maxTokens int,
 	stopSequences []string,
+	needPendingTeamMailboxReminder bool,
 	disableParallelToolUse bool,
 	toolCallChan <-chan *backend.ToolCall,
 ) {
@@ -680,6 +712,8 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	if hasToolUse {
 		stopReason = "tool_use"
 		stopSequence = nil
+	} else if stopReason == "" && needPendingTeamMailboxReminder && outputChars == 0 {
+		stopReason = "pause_turn"
 	} else if stopReason == "" {
 		stopReason = "end_turn"
 	}
@@ -876,12 +910,86 @@ func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
 			Type: "function",
 			Function: openaiapi.OpenAIToolFunction{
 				Name:        name,
-				Description: tool.Description,
+				Description: rewriteClaudeToolDescription(name, tool.Description),
 				Parameters:  tool.InputSchema,
 			},
 		})
 	}
 	return result, nil
+}
+
+func rewriteClaudeToolDescription(name string, description string) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(name), "Agent"):
+		return appendClaudeToolDescription(description, strings.TrimSpace(`
+Compatibility note for GPT backends:
+- The Agent tool result may include an agentId.
+- The returned agentId is only for Agent.resume; it is NOT a task_id.
+- If a foreground Agent call already returned the final answer text,
+  use that text directly instead of calling TaskOutput.
+- Do NOT call TaskOutput or TaskStop with an Agent agentId.
+- In team mode, teammate results arrive through the teammate mailbox.
+- Agent.resume is not a read-output/poll primitive; use it only when you need
+  to send a real follow-up instruction to that teammate.
+- If the result only says teammate_spawned, wait for a teammate mailbox message
+  or coordinate via team messaging tools instead of spawning another Agent.
+- Do not end the turn, finalize the response, or start shutdown while unread
+  teammate mailbox results are still expected.
+`))
+	case strings.EqualFold(strings.TrimSpace(name), "TeamCreate"):
+		return appendClaudeToolDescription(description, strings.TrimSpace(`
+Compatibility note for GPT backends:
+- TeamCreate only creates the team mailbox and teammate namespace.
+- TeamCreate does not run tasks by itself; dispatch work with Agent after the
+  team exists.
+- In team mode, concrete teammate results should be collected from the team
+  mailbox instead of guessing task completion from spawn acknowledgements.
+- Collect unread team mailbox results before finalizing the response or
+  starting team shutdown.
+`))
+	case strings.EqualFold(strings.TrimSpace(name), "SendMessage"):
+		return appendClaudeToolDescription(description, strings.TrimSpace(`
+Compatibility note for GPT backends:
+- Use SendMessage to deliver mailbox coordination or a concrete result to the
+  intended teammate or lead.
+- A teammate that finished real work should send its concrete result through
+  the mailbox instead of expecting Agent.resume to be used as polling.
+- idle_notification only means the teammate is available; it is not a reason
+  to re-spawn the same task.
+- After sending a shutdown_request, wait for teammate mailbox messages with
+  shutdown_approved before cleanup or finalizing the response.
+`))
+	case strings.EqualFold(strings.TrimSpace(name), "TaskOutput"):
+		return appendClaudeToolDescription(description, strings.TrimSpace(`
+Compatibility note for GPT backends:
+- task_id must be a real task ID, not an Agent agentId.
+- If an Agent tool result already contains the final answer text,
+  do not call TaskOutput; answer using that result directly.
+`))
+	case strings.EqualFold(strings.TrimSpace(name), "TaskStop"):
+		return appendClaudeToolDescription(description, strings.TrimSpace(`
+Compatibility note for GPT backends:
+- task_id must be a real task ID, not an Agent agentId.
+- Do not use TaskStop to stop or clean up an Agent by passing its agentId.
+`))
+	default:
+		return description
+	}
+}
+
+func appendClaudeToolDescription(base string, note string) string {
+	base = strings.TrimSpace(base)
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return base
+	}
+	if base == "" {
+		return note
+	}
+	if strings.Contains(base, note) {
+		return base
+	}
+	return base + "\n\n" + note
 }
 
 func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
@@ -926,6 +1034,311 @@ func convertClaudeMessages(system claudeContentField, messages []claudeMessage) 
 		return nil, fmt.Errorf("no valid messages to send")
 	}
 	return result, nil
+}
+
+func needsClaudePendingTeamMailboxReminder(messages []claudeMessage) (bool, error) {
+	state, err := analyzeClaudePendingTeamMailboxState(messages)
+	if err != nil {
+		return false, err
+	}
+	return state.pending(), nil
+}
+
+func claudePendingTeamMailboxReminderText(messages []claudeMessage) (string, error) {
+	state, err := analyzeClaudePendingTeamMailboxState(messages)
+	if err != nil {
+		return "", err
+	}
+	return state.reminderText(), nil
+}
+
+type claudePendingTeamMailboxState struct {
+	awaitingConcreteResults   bool
+	awaitingShutdownApprovals bool
+}
+
+func (s claudePendingTeamMailboxState) pending() bool {
+	return s.awaitingConcreteResults || s.awaitingShutdownApprovals
+}
+
+func (s claudePendingTeamMailboxState) reminderText() string {
+	switch {
+	case s.awaitingConcreteResults:
+		return claudePendingTeamMailboxReminder
+	case s.awaitingShutdownApprovals:
+		return claudePendingTeamShutdownReminder
+	default:
+		return ""
+	}
+}
+
+func analyzeClaudePendingTeamMailboxState(messages []claudeMessage) (claudePendingTeamMailboxState, error) {
+	spawned := make(map[string]struct{})
+	concreteResults := make(map[string]struct{})
+	shutdownTargetsByToolUseID := make(map[string]string)
+	shutdownRequests := make(map[string]struct{})
+	shutdownApprovals := make(map[string]struct{})
+
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "" {
+			continue
+		}
+		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
+		if err != nil {
+			return claudePendingTeamMailboxState{}, err
+		}
+		switch role {
+		case "assistant":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_use") {
+					continue
+				}
+				switch strings.TrimSpace(block.Name) {
+				case "Agent":
+					if !hasNonEmptyStringField(block.Input, "team_name") {
+						continue
+					}
+					name, _ := block.Input["name"].(string)
+					if name = strings.TrimSpace(name); name != "" {
+						spawned[name] = struct{}{}
+					}
+				case "SendMessage":
+					recipient := parseClaudeShutdownRequestRecipient(block.Input)
+					if recipient == "" {
+						continue
+					}
+					shutdownTargetsByToolUseID[strings.TrimSpace(block.ID)] = recipient
+				}
+			}
+		case "user":
+			text, err := claudeBlocksToText(blocks)
+			if err != nil {
+				return claudePendingTeamMailboxState{}, err
+			}
+			for _, mailboxMsg := range extractClaudeTeammateMailboxMessages(text) {
+				teammateID := normalizeClaudeTeammateMailboxID(mailboxMsg.teammateID)
+				eventType, eventFrom := parseClaudeTeammateMailboxEvent(mailboxMsg.body)
+				if teammateID == "" {
+					teammateID = normalizeClaudeTeammateMailboxID(eventFrom)
+				}
+				if teammateID == "" || isClaudeEmptyTeammateMailboxBody(mailboxMsg.body) {
+					continue
+				}
+				switch eventType {
+				case "idle_notification":
+					continue
+				case "shutdown_approved":
+					shutdownApprovals[teammateID] = struct{}{}
+					continue
+				}
+				concreteResults[teammateID] = struct{}{}
+			}
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_result") {
+					continue
+				}
+				output, err := claudeContentToText(block.Content)
+				if err != nil {
+					return claudePendingTeamMailboxState{}, err
+				}
+				output = strings.TrimSpace(output)
+				if strings.Contains(output, "Spawned successfully.") &&
+					strings.Contains(output, "receive instructions via mailbox") &&
+					strings.Contains(output, "team_name:") {
+					if name := parseClaudeSpawnAckName(output); name != "" {
+						spawned[name] = struct{}{}
+					}
+				}
+				if recipient, ok := shutdownTargetsByToolUseID[strings.TrimSpace(block.ToolUseID)]; ok &&
+					parseClaudeShutdownRequestAck(output) {
+					shutdownRequests[recipient] = struct{}{}
+				}
+			}
+		}
+	}
+
+	var state claudePendingTeamMailboxState
+	for teammateID := range spawned {
+		if _, ok := concreteResults[teammateID]; !ok {
+			state.awaitingConcreteResults = true
+			break
+		}
+	}
+	for teammateID := range shutdownRequests {
+		if _, ok := shutdownApprovals[teammateID]; !ok {
+			state.awaitingShutdownApprovals = true
+			break
+		}
+	}
+	return state, nil
+}
+
+type claudeTeammateMailboxMessage struct {
+	teammateID string
+	body       string
+}
+
+func extractClaudeTeammateMailboxMessages(text string) []claudeTeammateMailboxMessage {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	const (
+		openTag  = "<teammate-message"
+		closeTag = "</teammate-message>"
+	)
+	var result []claudeTeammateMailboxMessage
+	for {
+		start := strings.Index(text, openTag)
+		if start < 0 {
+			return result
+		}
+		text = text[start:]
+		tagEnd := strings.Index(text, ">")
+		if tagEnd < 0 {
+			return result
+		}
+		closeIdx := strings.Index(text[tagEnd+1:], closeTag)
+		if closeIdx < 0 {
+			return result
+		}
+		closeIdx += tagEnd + 1
+		tag := text[:tagEnd+1]
+		body := text[tagEnd+1 : closeIdx]
+		result = append(result, claudeTeammateMailboxMessage{
+			teammateID: parseQuotedAttribute(tag, "teammate_id"),
+			body:       body,
+		})
+		text = text[closeIdx+len(closeTag):]
+	}
+}
+
+func parseQuotedAttribute(tag string, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	pattern := key + `="`
+	start := strings.Index(tag, pattern)
+	if start < 0 {
+		return ""
+	}
+	start += len(pattern)
+	end := strings.Index(tag[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(tag[start : start+end])
+}
+
+func normalizeClaudeTeammateMailboxID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if base, _, ok := strings.Cut(id, "@"); ok {
+		id = base
+	}
+	return strings.TrimSpace(id)
+}
+
+func isClaudeEmptyTeammateMailboxBody(body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return true
+	}
+	var text string
+	if err := json.Unmarshal([]byte(body), &text); err == nil {
+		return strings.TrimSpace(text) == ""
+	}
+	return false
+}
+
+func parseClaudeTeammateMailboxEvent(body string) (eventType string, from string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return "", ""
+	}
+	eventType, _ = payload["type"].(string)
+	from, _ = payload["from"].(string)
+	return strings.TrimSpace(eventType), strings.TrimSpace(from)
+}
+
+func isClaudeControlTeammateMailboxBody(body string) bool {
+	if isClaudeEmptyTeammateMailboxBody(body) {
+		return true
+	}
+	typeValue, _ := parseClaudeTeammateMailboxEvent(body)
+	switch typeValue {
+	case "idle_notification", "shutdown_approved":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseClaudeSpawnAckName(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "name:") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(line, "name:"))
+	}
+	return ""
+}
+
+func parseClaudeShutdownRequestRecipient(input map[string]any) string {
+	if input == nil {
+		return ""
+	}
+	if !claudeInputIndicatesShutdownRequest(input) {
+		return ""
+	}
+	for _, key := range []string{"recipient", "to"} {
+		value, _ := input[key].(string)
+		if value = normalizeClaudeTeammateMailboxID(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func claudeInputIndicatesShutdownRequest(input map[string]any) bool {
+	if input == nil {
+		return false
+	}
+	if value, _ := input["type"].(string); strings.TrimSpace(value) == "shutdown_request" {
+		return true
+	}
+	message, _ := input["message"].(map[string]any)
+	if message == nil {
+		return false
+	}
+	value, _ := message["type"].(string)
+	return strings.TrimSpace(value) == "shutdown_request"
+}
+
+func parseClaudeShutdownRequestAck(output string) bool {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return false
+	}
+	success, _ := payload["success"].(bool)
+	if !success {
+		return false
+	}
+	target, _ := payload["target"].(string)
+	return strings.TrimSpace(target) != ""
 }
 
 func parseClaudeContentBlocks(raw json.RawMessage) ([]claudeContentBlock, error) {

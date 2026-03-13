@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/LubyRuffy/gptb2o/trace"
 	"github.com/gin-gonic/gin"
 )
+
+var defaultTraceDBPath = filepath.Join("artifacts", "traces", "gptb2o-trace.db")
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -36,7 +39,7 @@ func run(args []string, stdout io.Writer) error {
 		authSource      = flagSet.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
 		originator      = flagSet.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
 		reasoningEffort = flagSet.String("reasoning-effort", "", "default reasoning effort forwarded to backend (e.g. low|medium|high)")
-		traceDBPath     = flagSet.String("trace-db-path", "", "sqlite path for full-chain tracing")
+		traceDBPath     = flagSet.String("trace-db-path", defaultTraceDBPath, "sqlite path for full-chain tracing")
 		traceMaxBody    = flagSet.Int("trace-max-body-bytes", 64<<10, "max body bytes stored per trace event")
 		showInteraction = flagSet.String("show-interaction", "", "print a traced interaction by id and exit")
 	)
@@ -45,24 +48,25 @@ func run(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	var tracer *trace.Tracer
-	if strings.TrimSpace(*traceDBPath) != "" {
-		store, err := trace.OpenStore(*traceDBPath)
+	tracePath := strings.TrimSpace(*traceDBPath)
+	if tracePath == "" {
+		tracePath = defaultTraceDBPath
+	}
+
+	store, err := trace.OpenStore(tracePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	tracer := trace.NewTracer(store, trace.TracerOptions{MaxBodyBytes: *traceMaxBody})
+	if interactionID := strings.TrimSpace(*showInteraction); interactionID != "" {
+		interaction, events, err := store.GetInteraction(interactionID)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = store.Close() }()
-		tracer = trace.NewTracer(store, trace.TracerOptions{MaxBodyBytes: *traceMaxBody})
-		if interactionID := strings.TrimSpace(*showInteraction); interactionID != "" {
-			interaction, events, err := store.GetInteraction(interactionID)
-			if err != nil {
-				return err
-			}
-			_, err = io.WriteString(stdout, trace.FormatInteractionReport(interaction, events))
-			return err
-		}
-	} else if strings.TrimSpace(*showInteraction) != "" {
-		return fmt.Errorf("trace-db-path is required when show-interaction is set")
+		_, err = io.WriteString(stdout, trace.FormatInteractionReport(interaction, events))
+		return err
 	}
 
 	provider, err := auth.NewProvider(*authSource)
@@ -102,9 +106,7 @@ func run(args []string, stdout io.Writer) error {
 	log.Printf("OpenAI SDK base_url: http://%s%s", exampleAddr, *basePath)
 	log.Printf("try: curl http://%s%s/messages -H 'Content-Type: application/json' -d '{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":false}'", exampleAddr, *basePath, gptb2o.DefaultModelFullID)
 	log.Printf("Claude Code base_url: http://%s%s", exampleAddr, *basePath)
-	if strings.TrimSpace(*traceDBPath) != "" {
-		log.Printf("trace db: %s", *traceDBPath)
-	}
+	log.Printf("trace db: %s", tracePath)
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

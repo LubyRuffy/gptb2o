@@ -19,11 +19,11 @@
 - `--reasoning-effort`
   服务端默认推理强度
 - `--trace-db-path`
-  SQLite trace 数据库路径
+  SQLite trace 数据库路径，默认 `./artifacts/traces/gptb2o-trace.db`
 - `--trace-max-body-bytes`
   单条 trace event 保存的最大 body 字节数
 - `--show-interaction`
-  打印指定 `interaction_id` 的完整链路并退出
+  打印指定 `interaction_id` 的完整链路并退出；未显式传 `--trace-db-path` 时使用默认 trace 库
 
 ### 示例
 
@@ -34,8 +34,11 @@ go run ./cmd/gptb2o-server --auth-source codex
 ```bash
 go run ./cmd/gptb2o-server \
   --auth-source codex \
-  --reasoning-effort medium \
-  --trace-db-path ./artifacts/traces/gptb2o.db
+  --reasoning-effort medium
+```
+
+```bash
+go run ./cmd/gptb2o-server --show-interaction ia_example
 ```
 
 ```bash

@@ -43,7 +43,7 @@
 ## Trace 配置
 
 - `--trace-db-path`
-  启用 SQLite trace
+  SQLite trace 数据库路径，默认 `./artifacts/traces/gptb2o-trace.db`
 - `--trace-max-body-bytes`
   控制每条事件最大 body 存储大小
 

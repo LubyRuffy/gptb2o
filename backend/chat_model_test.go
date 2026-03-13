@@ -716,3 +716,109 @@ func TestDoStreamRequest_RetryReasoningEffortXHigh(t *testing.T) {
 	require.Equal(t, "xhigh", firstEffort)
 	require.Equal(t, "high", secondEffort)
 }
+
+func TestDoStreamRequest_RetryWithoutUnsupportedTemperature(t *testing.T) {
+	var calls int32
+	var firstHasTemperature bool
+	var secondHasTemperature bool
+
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		call := atomic.AddInt32(&calls, 1)
+
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		_, hasTemperature := payload["temperature"]
+		if call == 1 {
+			firstHasTemperature = hasTemperature
+		}
+		if call == 2 {
+			secondHasTemperature = hasTemperature
+		}
+
+		if hasTemperature {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"detail":"Unsupported parameter: temperature"}`)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer backendSrv.Close()
+
+	temp := float32(1)
+	m, err := NewChatModel(ChatModelConfig{
+		Model:       "gpt-5.3-codex-spark",
+		BackendURL:  backendSrv.URL,
+		AccessToken: "token",
+		HTTPClient:  backendSrv.Client(),
+		Originator:  "test-agent",
+		Temperature: &temp,
+	})
+	require.NoError(t, err)
+
+	out, err := m.Generate(context.Background(), []*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ok", out.Content)
+	require.Equal(t, int32(2), atomic.LoadInt32(&calls))
+	require.True(t, firstHasTemperature)
+	require.False(t, secondHasTemperature)
+}
+
+func TestDoStreamRequest_RetryWithoutUnsupportedTopP(t *testing.T) {
+	var calls int32
+	var firstHasTopP bool
+	var secondHasTopP bool
+
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		call := atomic.AddInt32(&calls, 1)
+
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		_, hasTopP := payload["top_p"]
+		if call == 1 {
+			firstHasTopP = hasTopP
+		}
+		if call == 2 {
+			secondHasTopP = hasTopP
+		}
+
+		if hasTopP {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"detail":"Unsupported parameter: top_p"}`)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer backendSrv.Close()
+
+	topP := float32(0.9)
+	m, err := NewChatModel(ChatModelConfig{
+		Model:       "gpt-5.3-codex-spark",
+		BackendURL:  backendSrv.URL,
+		AccessToken: "token",
+		HTTPClient:  backendSrv.Client(),
+		Originator:  "test-agent",
+		TopP:        &topP,
+	})
+	require.NoError(t, err)
+
+	out, err := m.Generate(context.Background(), []*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ok", out.Content)
+	require.Equal(t, int32(2), atomic.LoadInt32(&calls))
+	require.True(t, firstHasTopP)
+	require.False(t, secondHasTopP)
+}

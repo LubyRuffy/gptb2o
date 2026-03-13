@@ -52,6 +52,13 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260312-214500 经验教训：Agent 返回的 agentId 不能让模型自行脑补成 task_id
+
+- 现象：Claude Code 本地 `Agent` 工具完成后，tool result 里只给出 `agentId: ...` 文本；GPT backend 在部分真实会话里会继续调用 `TaskOutput`，并把这个 `agentId` 直接塞进 `task_id`，触发 `No task found with ID`。
+- 根因：`/v1/messages` 兼容层虽然透传了 `Agent` / `TaskOutput` / `TaskStop`，但对 GPT backend 没有补足生命周期语义约束；`Agent` 描述说“返回 agent ID”，`TaskOutput` 描述又说“适用于 agent tasks”，模型容易把两者错误关联。
+- 处置：在 Claude tool 转 OpenAI function tool 时，给 `Agent` / `TaskOutput` / `TaskStop` 追加兼容提示，明确 `agentId` 仅用于 `Agent.resume`，不是 `task_id`，前台 `Agent` 已有最终文本时不要再调用 `TaskOutput`。
+- 预防：以后遇到 Claude Code 本地工具协议接入 GPT backend 的问题，除了看 schema 字段，还必须检查工具 description 是否足以约束模型的生命周期推断，尤其是 id 语义是否可能被混淆。
+
 ## 20260312-181500 经验教训：外部 CLI 协议漂移必须和可回放 trace 一起修
 
 - 现象：Claude Code 2.1.74 teammate 场景会发出新的 `Agent` / `TaskOutput` / `TaskStop` 工具协议，但仓库里的真实集成测试和局部兼容逻辑仍假设旧 `Task` schema，导致“普通消息可用，agent/team 流程异常停止”且难以事后定位。

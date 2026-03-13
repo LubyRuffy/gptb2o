@@ -146,6 +146,7 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 	currentPayload := payload
 	retriedWithoutCodeInterpreter := false
 	retriedReasoningEffort := false
+	retriedSamplingParams := make(map[string]bool, 2)
 	for {
 		content, toolCalls, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
 		if err == nil {
@@ -172,6 +173,14 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 				currentPayload.Reasoning = &requestReasoning{Effort: fallbackEffort}
 				retriedReasoningEffort = true
 				continue
+			}
+		}
+		if errors.As(err, &statusErr) && statusErr.status == http.StatusBadRequest {
+			if samplingParam := UnsupportedSamplingParam(statusErr.message); samplingParam != "" && !retriedSamplingParams[samplingParam] {
+				if removeSamplingParam(currentPayload, samplingParam) {
+					retriedSamplingParams[samplingParam] = true
+					continue
+				}
 			}
 		}
 		return "", nil, err
@@ -392,6 +401,28 @@ func (m *ChatModel) buildRequestPayload(input []*schema.Message) (*requestPayloa
 		Temperature:  m.config.Temperature,
 		TopP:         m.config.TopP,
 	}, nil
+}
+
+func removeSamplingParam(payload *requestPayload, name string) bool {
+	if payload == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case samplingParamTemperature:
+		if payload.Temperature == nil {
+			return false
+		}
+		payload.Temperature = nil
+		return true
+	case samplingParamTopP:
+		if payload.TopP == nil {
+			return false
+		}
+		payload.TopP = nil
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveMessageContent(msg *schema.Message) any {

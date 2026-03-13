@@ -23,7 +23,10 @@
 - 提供 Claude 兼容路径 `/v1/messages`、`/v1/messages/count_tokens`
 - 把 Claude `output_config.effort` 映射到 backend `reasoning.effort`
 - 透传 Claude 工具定义与 tool_use/tool_result 往返
-- 对 teammate 协议兼容 `Agent` / `TaskOutput` / `TaskStop` / `Task`
+- 对 teammate 协议兼容 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
+- 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup
+- 对 agent teams pending mailbox 做差集判断：只有所有已 spawn teammate 都收到 concrete mailbox result 后，才解除等待；控制消息不会被误判成任务完成
+- 对 shutdown 阶段继续做差集判断：只有所有已发送 `shutdown_request` 的 teammate 都回 `shutdown_approved` 后，才允许 cleanup
 
 ### `backend`
 
@@ -31,6 +34,7 @@
 - 统一处理 `instructions`、`reasoning.effort`、温度参数、工具定义
 - 读取 backend SSE 并还原文本输出与 function call
 - 对不支持的 `xhigh` effort 和不支持的 tool type 做降级重试
+- 对真实 backend 明确拒绝的 `temperature` / `top_p` 做一次剥离后重试
 
 ### `trace`
 
@@ -38,6 +42,7 @@
 - 在 outbound `HTTPClient.Transport` 处记录 `backend_request` / `backend_response`
 - 把一次交互聚合到同一个 `interaction_id`
 - 通过 SQLite 持久化，支持 `--show-interaction <id>` 输出完整链路
+- 默认 trace 库路径为 `./artifacts/traces/gptb2o-trace.db`
 
 ## 请求流
 
@@ -53,9 +58,18 @@
 
 1. Claude CLI 或其他 Anthropic 客户端请求 `/v1/messages`
 2. `openaihttp/claude.go` 解析 `model/messages/tools/output_config`
-3. 工具 schema 原样透传到 backend function tools
+3. 工具 schema 大体透传到 backend function tools；对 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 会追加兼容性语义提示
 4. backend 的 function call 事件被转成 Claude `tool_use`
 5. 用户的 `tool_result` 再被还原成 backend `function_call_output`
+
+### Claude Agent Teams 验证要点
+
+1. 最简单的 teammate 并发验证方式是 `agent teams + in-process`
+2. `split panes` 只影响展示，不是并发执行前提
+3. 对 team mode 的排障应同时检查 lead 会话、原始 teammate 日志和 mailbox 消息
+4. 对非交互 CLI，正常顺序应是“spawn -> mailbox 注入 -> 结果汇总 -> shutdown -> cleanup”
+5. 若只收到部分 teammate 的 concrete result，lead 仍应保持 `pause_turn`；不能因为任意 mailbox 消息到达就提前 shutdown
+6. 若 `shutdown_request` 已发出但 approvals 未齐，lead 仍应保持 `pause_turn`；不能因为发送成功的 tool_result 就提前 cleanup
 
 ## 数据流
 
@@ -70,8 +84,8 @@
 
 ## 一键排障链路
 
-1. 服务开启 `--trace-db-path`
+1. 服务默认开启 trace
 2. 客户端收到响应头 `X-GPTB2O-Interaction-ID`
 3. 用户提供该 `interaction_id`
-4. 执行 `gptb2o-server --trace-db-path ... --show-interaction <id>`
+4. 执行 `gptb2o-server --show-interaction <id>`
 5. 服务输出交互总览和完整事件明细

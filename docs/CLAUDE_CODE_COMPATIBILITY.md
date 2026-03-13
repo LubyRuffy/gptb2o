@@ -29,7 +29,7 @@
 | non-stream `message` JSON envelope | Supported | 返回 Claude 风格 `message` 响应 |
 | `content.text` | Supported | handler tests 覆盖 |
 | `content.tool_use` | Supported | 包括常见 tool call 透传 |
-| `stop_reason` common paths | Partially supported | 重点覆盖 `end_turn` 与 `tool_use` |
+| `stop_reason` common paths | Partially supported | 重点覆盖 `end_turn`、`tool_use`，以及 teammate mailbox 待回流时的 `pause_turn` |
 | `usage` fields | Partial | 当前值以兼容与估算为主，不承诺与 Anthropic 精确对齐 |
 
 ## Supported streaming behaviors
@@ -48,8 +48,9 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | `Task` | Supported | 兼容旧 teammate 工具协议 |
-| `Agent` | Supported | 支持 Claude Code 新协议常见路径 |
-| `TaskOutput` / `TaskStop` | Partially supported | 已做协议透传，重点保障常见 round-trip |
+| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示 |
+| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup” |
+| `TaskOutput` / `TaskStop` | Partially supported | 已做协议透传，并补充 `task_id` 只接受真实 task id 的语义提示 |
 | new/old teammate protocol coexistence | Supported | 文档与测试均以双协议兼容为目标 |
 | real Claude CLI teammate round-trip | Supported with tests | 仓库内已有真实 CLI 集成测试 |
 
@@ -62,6 +63,16 @@
 - **少见 content block 组合**：主要保障 Claude Code 常见路径，未承诺全部边缘组合
 - **SSE 边角时序细节**：主路径已支持，但一些非常规边界仍可能与 Anthropic 官方实现不同
 - **全部 SDK 行为一致性**：当前优先级低于 Claude Code 实战兼容
+
+## Team Validation Notes
+
+- 验证 teammate 并发时，优先使用 `agent teams + in-process`；这已经足以在任意终端验证 team path，不需要 `iTerm2`
+- `split panes` 只影响多 pane 展示，不是 teammate 并发执行的前置条件
+- 对 team mode 的正确性判断，不能只看 lead 最终回答；还需要核对原始 teammate 日志或 mailbox 消息是否返回了 concrete result
+- 对 `--print` / 非交互模式，推荐额外核对日志顺序：应先出现 teammate mailbox 注入，再出现 shutdown/cleanup；否则通常是 lead 提前结束了 turn
+- 若 team lead 已完成 teammate spawn、但 concrete mailbox 结果尚未回流，兼容层会把空响应 turn 归一成 `pause_turn`，避免把“等待 mailbox”误报成 `end_turn`
+- pending mailbox 判断按“已 spawn teammate 与已收到 concrete mailbox result 的差集”执行；控制消息如 `idle_notification` / `shutdown_approved` 不会误解除 pending
+- 若 team lead 已发送 `shutdown_request`、但 `shutdown_approved` 尚未齐全，兼容层同样会保持 `pause_turn`，避免把“等待 shutdown approvals”误报成 `end_turn`
 
 ## Verification sources
 

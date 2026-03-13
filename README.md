@@ -44,6 +44,7 @@ go run ./cmd/gptb2o-server --auth-source codex
 ```
 
 默认监听地址是 `127.0.0.1:12345`，默认 base path 是 `/v1`。
+默认 trace 数据库路径是 `./artifacts/traces/gptb2o-trace.db`。
 
 ### 3. 验证 OpenAI 兼容接口
 
@@ -55,20 +56,16 @@ curl http://127.0.0.1:12345/v1/responses \
   -d '{"model":"chatgpt/codex/gpt-5.4","input":"hi","stream":false}'
 ```
 
-### 4. 启用全链路追踪
+### 4. 查看全链路追踪
 
 ```bash
-go run ./cmd/gptb2o-server \
-  --auth-source codex \
-  --trace-db-path ./artifacts/traces/gptb2o-trace.db
+go run ./cmd/gptb2o-server --auth-source codex
 ```
 
 复现问题后，从响应头拿到 `X-GPTB2O-Interaction-ID`，再回放：
 
 ```bash
-go run ./cmd/gptb2o-server \
-  --trace-db-path ./artifacts/traces/gptb2o-trace.db \
-  --show-interaction ia_example
+go run ./cmd/gptb2o-server --show-interaction ia_example
 ```
 
 ## 使用示例
@@ -113,6 +110,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
 - `/v1/messages` 已兼容 `output_config.effort`。
 - `/v1/messages` 的兼容目标是 Claude Code 常见使用路径，而不是完整 Anthropic Messages 全量对等；支持矩阵见 [docs/CLAUDE_CODE_COMPATIBILITY.md](docs/CLAUDE_CODE_COMPATIBILITY.md)。
 - teammate / agent teams 场景已支持新旧工具协议透传，不再只依赖旧 `Task`。
+- 对 Claude Code 本地 `Agent` / `TaskOutput` / `TaskStop` 工具，gptb2o 会补充面向 GPT backend 的语义提示，避免把 `agentId` 误当成 `task_id`。
 
 ### Eino / ADK demo
 
@@ -128,6 +126,11 @@ go run ./cmd/gptb2o-adk \
 - 固定默认推理强度：
 ```bash
 go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort high
+```
+
+- 覆盖默认 trace 库路径：
+```bash
+go run ./cmd/gptb2o-server --trace-db-path ./artifacts/traces/custom.db
 ```
 
 - 控制 trace body 落库大小：

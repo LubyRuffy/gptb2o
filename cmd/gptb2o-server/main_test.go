@@ -83,3 +83,52 @@ func TestRun_ShowInteraction(t *testing.T) {
 		t.Fatalf("run() output is empty")
 	}
 }
+
+func TestRun_ShowInteraction_UsesDefaultTraceDBPath(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Chdir(tempDir)
+
+	dbPath := filepath.Join("artifacts", "traces", "gptb2o-trace.db")
+	store, err := trace.OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := store.Close(); closeErr != nil {
+			t.Fatalf("Close() error = %v", closeErr)
+		}
+	})
+
+	if err := store.StartInteraction(trace.Interaction{
+		InteractionID: "ia_cli_default",
+		Method:        http.MethodPost,
+		Path:          "/v1/messages",
+		ClientAPI:     "claude",
+		Model:         "gpt-5.4",
+		StartedAt:     time.Now(),
+	}); err != nil {
+		t.Fatalf("StartInteraction() error = %v", err)
+	}
+	if err := store.AppendEvent(trace.InteractionEvent{
+		InteractionID: "ia_cli_default",
+		Seq:           1,
+		Kind:          trace.EventClientRequest,
+		Body:          `{"model":"gpt-5.4"}`,
+		Summary:       "client request",
+	}); err != nil {
+		t.Fatalf("AppendEvent() error = %v", err)
+	}
+	if err := store.FinishInteraction("ia_cli_default", http.StatusOK, ""); err != nil {
+		t.Fatalf("FinishInteraction() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := run([]string{
+		"--show-interaction", "ia_cli_default",
+	}, &stdout); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got := stdout.String(); got == "" {
+		t.Fatalf("run() output is empty")
+	}
+}

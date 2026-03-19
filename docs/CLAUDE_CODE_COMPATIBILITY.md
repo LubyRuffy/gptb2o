@@ -49,8 +49,8 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | `Task` | Supported | 兼容旧 teammate 工具协议 |
-| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示 |
-| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup” |
+| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示；若遇到 `Already leading team`，会明确提示不要重复 `TeamCreate`，而是先 `TeamDelete` 或改用新 team 名 |
+| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup”；`TeamCreate` 遇到 `Already leading team` 时，会提示不要在同一 lead 上循环重试 |
 | `TaskOutput` / `TaskStop` | Partially supported | 已做协议透传，并补充 `task_id` 只接受真实 task id 的语义提示 |
 | new/old teammate protocol coexistence | Supported | 文档与测试均以双协议兼容为目标 |
 | real Claude CLI teammate round-trip | Supported with tests | 仓库内已有真实 CLI 集成测试 |
@@ -72,6 +72,7 @@
 - 对 team mode 的正确性判断，不能只看 lead 最终回答；还需要核对原始 teammate 日志或 mailbox 消息是否返回了 concrete result
 - 对 `--print` / 非交互模式，推荐额外核对日志顺序：应先出现 teammate mailbox 注入，再出现 shutdown/cleanup；否则通常是 lead 提前结束了 turn
 - 若 team lead 已完成 teammate spawn、但 concrete mailbox 结果尚未回流，兼容层会把空响应 turn 归一成 `pause_turn`，避免把“等待 mailbox”误报成 `end_turn`
+- 即使 lead 在等待 teammate mailbox 时已经输出了 `Still waiting...` 等中间态文本，只要未读 mailbox 结果仍存在，兼容层也会继续保持 `pause_turn`
 - pending mailbox 判断按“已 spawn teammate 与已收到 concrete mailbox result 的差集”执行；控制消息如 `idle_notification` / `shutdown_approved` 不会误解除 pending
 - 若 team lead 已发送 `shutdown_request`、但 `shutdown_approved` 尚未齐全，兼容层同样会保持 `pause_turn`，避免把“等待 shutdown approvals”误报成 `end_turn`
 

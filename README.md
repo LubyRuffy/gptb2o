@@ -68,6 +68,31 @@ go run ./cmd/gptb2o-server --auth-source codex
 go run ./cmd/gptb2o-server --show-interaction ia_example
 ```
 
+如果是流式请求，先看回放顶部的 `error_summary`：
+- 为空通常表示这轮正常收束
+- 若出现如 `api_error: ...`，说明虽然客户端可能拿到了 `200`，但 stream 内部已经发过 `event: error`
+
+如果回放还不够，需要直接查 SQLite，建议固定按下面顺序做，不要先猜表结构：
+
+```bash
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interactions"
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interaction_events"
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, path, client_api, model, status_code, error_summary, started_at, finished_at from interactions order by started_at desc limit 10;"
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, seq, kind, status_code, method, coalesce(url, path, '') as target, summary from interaction_events where interaction_id = 'ia_example' order by seq;"
+```
+
+排障时优先看这几个信号：
+- `interactions.status_code`
+  客户端最终看到的 HTTP 状态
+- `interactions.error_summary`
+  流式请求里是否出现过内部 `event: error`
+- `interaction_events.kind`
+  是否已经走到 `backend_response` / `client_response`
+- `interaction_events.summary`
+  先用摘要判断，再决定要不要展开 `body`
+
 ## 使用示例
 
 ### OpenAI `/v1/responses`

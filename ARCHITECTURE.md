@@ -24,7 +24,7 @@
 - 把 Claude `output_config.effort` 映射到 backend `reasoning.effort`
 - 透传 Claude 工具定义与 tool_use/tool_result 往返
 - 对 teammate 协议兼容 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
-- 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup
+- 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；若本地 team 已落入 `Already leading team` 脏状态，也会明确提示优先 `TeamDelete` 或切换新 team 名，而不是循环重试 `TeamCreate`
 - 对 agent teams pending mailbox 做差集判断：只有所有已 spawn teammate 都收到 concrete mailbox result 后，才解除等待；控制消息不会被误判成任务完成
 - 对 shutdown 阶段继续做差集判断：只有所有已发送 `shutdown_request` 的 teammate 都回 `shutdown_approved` 后，才允许 cleanup
 
@@ -89,3 +89,15 @@
 3. 用户提供该 `interaction_id`
 4. 执行 `gptb2o-server --show-interaction <id>`
 5. 服务输出交互总览和完整事件明细
+
+### 调试顺序约定
+
+为了避免把“猜测中的表结构”当成事实，开发者排障时固定遵循下面顺序：
+
+1. 先用 `--show-interaction <id>` 看完整回放
+2. 如果需要批量筛最近异常，再查 `interactions`
+3. 查库前先执行 `.schema interactions` 和 `.schema interaction_events`
+4. 先看 `summary` / `status_code` / `error_summary`，只有在这些信号不够时才展开 `body`
+5. 对 stream 请求，优先判断 `error_summary` 与事件链是否完整，不要只盯客户端是否拿到 `200`
+
+这样可以避免因为记错列名或表字段演进而把排障时间浪费在错误 SQL 上。

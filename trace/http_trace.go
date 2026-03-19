@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -109,7 +110,7 @@ func (t *Tracer) WrapHTTP(next http.Handler) http.Handler {
 			Summary:       summarizeResponse("client response", capture.StatusCode(), len(responseBody), responseTruncated),
 			DurationMs:    time.Since(startedAt).Milliseconds(),
 		})
-		_ = t.store.FinishInteraction(interactionID, capture.StatusCode(), "")
+		_ = t.store.FinishInteraction(interactionID, capture.StatusCode(), summarizeResponseError(responseHeaders.Get("Content-Type"), capture.StatusCode(), responseBody))
 		t.logf("interaction_id=%s stage=%s status=%d duration_ms=%d", interactionID, EventClientResponse, capture.StatusCode(), time.Since(startedAt).Milliseconds())
 	})
 }
@@ -173,6 +174,96 @@ func summarizeResponse(prefix string, statusCode int, bodyLen int, truncated boo
 		summary += " truncated=true"
 	}
 	return summary
+}
+
+func summarizeResponseError(contentType string, statusCode int, body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		if msg := extractSSEErrorSummary(body); msg != "" {
+			return msg
+		}
+	}
+	if statusCode < http.StatusBadRequest {
+		return ""
+	}
+	if msg := extractJSONErrorMessage(body); msg != "" {
+		return msg
+	}
+	firstLine := strings.TrimSpace(strings.SplitN(body, "\n", 2)[0])
+	if firstLine == "" {
+		return ""
+	}
+	return fmt.Sprintf("http %d: %s", statusCode, firstLine)
+}
+
+func extractSSEErrorSummary(body string) string {
+	lines := strings.Split(body, "\n")
+	var currentEvent string
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+			continue
+		}
+		if currentEvent != "error" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if payload == "" {
+			continue
+		}
+		var envelope struct {
+			Type  string `json:"type"`
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
+			continue
+		}
+		msg := strings.TrimSpace(envelope.Error.Message)
+		errType := strings.TrimSpace(envelope.Error.Type)
+		switch {
+		case errType != "" && msg != "":
+			return errType + ": " + msg
+		case msg != "":
+			return msg
+		case errType != "":
+			return errType
+		}
+	}
+	return ""
+}
+
+func extractJSONErrorMessage(body string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return ""
+	}
+	if msg := strings.TrimSpace(jsonStringAtPath(payload, "error", "message")); msg != "" {
+		return msg
+	}
+	if msg := strings.TrimSpace(jsonStringAtPath(payload, "message")); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+func jsonStringAtPath(payload map[string]any, path ...string) string {
+	var current any = payload
+	for _, key := range path {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = obj[key]
+	}
+	value, _ := current.(string)
+	return value
 }
 
 type limitedBuffer struct {

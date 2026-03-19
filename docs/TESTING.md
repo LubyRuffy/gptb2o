@@ -113,6 +113,48 @@ go run ./cmd/gptb2o-server --show-interaction ia_xxx
 3. backend 回给 `gptb2o`
 4. `gptb2o` 最终回给客户端
 
+如果是 stream 请求，先看回放顶部的 `error_summary`：
+- 为空通常表示这轮正常结束
+- 若出现 `api_error: ...` / `overloaded_error: ...` 等，说明 stream 内已经发过 `event: error`
+
+### 5. 直接查 SQLite 时的固定顺序
+
+先看 schema，不要先猜列名：
+
+```bash
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interactions"
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interaction_events"
+```
+
+先看最近交互总览：
+
+```bash
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, path, client_api, model, status_code, error_summary, started_at, finished_at from interactions order by started_at desc limit 20;"
+```
+
+再看单个交互的事件链：
+
+```bash
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, seq, kind, status_code, method, coalesce(url, path, '') as target, summary from interaction_events where interaction_id = 'ia_example' order by seq;"
+```
+
+最后才按需展开 body：
+
+```bash
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, seq, kind, substr(body, 1, 300) as body_prefix, body_truncated from interaction_events where interaction_id = 'ia_example' order by seq;"
+```
+
+推荐判读顺序：
+
+1. `status_code` 看客户端最终结果
+2. `error_summary` 看 stream 内部是否报错
+3. `seq/kind` 看链路停在 client、backend 还是写回客户端阶段
+4. `summary` 看概要
+5. `body` 只用于补充细节
+
 ## 本次相关回归测试
 
 - `trace/store_test.go`
@@ -135,6 +177,18 @@ go test ./openaihttp -run 'TestClaudeMessages_(NonStream_PendingTeamMailboxEmpty
 
 ```bash
 go test ./openaihttp -run 'TestClaudeMessages_(NonStream_ShutdownApprovalsStillPendingPausesTurn|Stream_ShutdownApprovalsStillPendingPausesTurn)|TestNeedsClaudePendingTeamMailboxReminder_(ShutdownApprovalsStillPending|SkipsWhenShutdownApprovalsArrive)' -v
+```
+
+如果要覆盖“本地 team 已落入 `Already leading team` 时，兼容提示必须引导 `TeamDelete` 或改新 team 名，而不是重复 `TeamCreate`”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions' -v
+```
+
+如果要覆盖“team-scoped Agent 实际 spawn 失败时，不能误注入 pending mailbox reminder”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestNeedsClaudePendingTeamMailboxReminder_SkipsFailedTeamScopedAgentSpawn' -v
 ```
 
 如果要覆盖“backend stream 首包前断流不能被误报为空 `end_turn`”的回归，再执行：

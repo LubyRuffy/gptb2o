@@ -68,8 +68,9 @@ Claude Messages 兼容接口。
 - 支持 `output_config.effort`
 - 支持 `tool_use` / `tool_result`
 - 支持 teammate 新旧协议工具透传：`Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
-- 会为 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 工具补充语义提示，避免把 `agentId` 误作 `task_id`，减少把 `Agent.resume` 误当作轮询 teammate 输出的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup
+- 会为 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 工具补充语义提示，避免把 `agentId` 误作 `task_id`，减少把 `Agent.resume` 误当作轮询 teammate 输出的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；如果本地工具返回 `Already leading team`，会明确引导优先 `TeamDelete` 清理 stale team 或改用新的 team 名，而不是重复 `TeamCreate`
 - 在 agent teams 场景下，如果 lead 已 spawn teammate 但 concrete mailbox 结果尚未到达，空响应 turn 会返回 `pause_turn`，避免误把等待 mailbox 的中间态暴露成 `end_turn`
+- 即使 lead 在等待 teammate mailbox 时输出了 `Still waiting...` 一类中间态文本，只要 mailbox 仍 pending，该 turn 也会保持 `pause_turn`，避免 Claude Code 将其误判为正常收束并重复拉起 reviewer
 - pending mailbox 判断会按“已 spawn teammate 集合 - 已收到 concrete mailbox result 集合”计算；`idle_notification` / `shutdown_approved` 之类控制消息不会被误判成任务完成
 - lead 发出 `shutdown_request` 之后，也会继续等待对应的 `shutdown_approved` mailbox 消息；在 approvals 未齐前，空响应 turn 同样会保持 `pause_turn`
 - 如果 backend stream 在首个 Claude SSE 事件写出前就异常中断，接口会直接返回兼容错误响应，而不是伪造一个 `200` 的空 `end_turn`
@@ -126,3 +127,12 @@ X-GPTB2O-Interaction-ID: ia_xxx
 ```
 
 默认 trace 库路径是 `./artifacts/traces/gptb2o-trace.db`。拿到这个值后，可用 CLI 回放整条链路。
+
+推荐排障顺序：
+
+1. 从响应头保存 `X-GPTB2O-Interaction-ID`
+2. 执行 `go run ./cmd/gptb2o-server --show-interaction <id>`
+3. 如果要看最近几次失败，先查 `interactions`
+4. 如果要看单次事件链，再查 `interaction_events`
+
+不要跳过 schema 检查直接写 SQL；trace 表结构以 [docs/DATA_MODEL.md](DATA_MODEL.md) 为准。

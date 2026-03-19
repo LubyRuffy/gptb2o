@@ -47,6 +47,31 @@ go run ./cmd/gptb2o-server \
   --show-interaction ia_example
 ```
 
+### Trace 排障辅助命令
+
+当 `--show-interaction` 还不够时，建议直接照抄下面的 SQLite 命令：
+
+```bash
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interactions"
+sqlite3 ./artifacts/traces/gptb2o-trace.db ".schema interaction_events"
+```
+
+```bash
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, path, client_api, model, status_code, error_summary, started_at, finished_at from interactions order by started_at desc limit 20;"
+```
+
+```bash
+sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
+  "select interaction_id, seq, kind, status_code, method, coalesce(url, path, '') as target, summary from interaction_events where interaction_id = 'ia_example' order by seq;"
+```
+
+说明：
+- 先看 `.schema`，不要手写猜列名
+- 最近异常先查 `interactions`
+- 单次交互明细再查 `interaction_events`
+- 大多数情况下 `summary` 已足够定位，只有需要原始请求体时再看 `body`
+
 ## `gptb2o-adk`
 
 最小 Eino / ADK demo，用于直接验证 backend ChatModel 与 tool calling。

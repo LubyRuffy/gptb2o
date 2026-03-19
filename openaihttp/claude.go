@@ -343,8 +343,9 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	stopSequence := (*string)(nil)
 	if hasToolUse {
 		stopReason = "tool_use"
-	} else if pendingTeamMailboxReminder != "" && strings.TrimSpace(limitedText) == "" && limitStopReason == "" {
+	} else if pendingTeamMailboxReminder != "" {
 		stopReason = "pause_turn"
+		stopSequence = nil
 	} else if limitStopReason != "" {
 		stopReason = limitStopReason
 		stopSequence = limitStopSequence
@@ -748,8 +749,9 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	if hasToolUse {
 		stopReason = "tool_use"
 		stopSequence = nil
-	} else if stopReason == "" && needPendingTeamMailboxReminder && outputChars == 0 {
+	} else if stopReason == "" && needPendingTeamMailboxReminder {
 		stopReason = "pause_turn"
+		stopSequence = nil
 	} else if stopReason == "" {
 		stopReason = "end_turn"
 	}
@@ -969,6 +971,9 @@ Compatibility note for GPT backends:
   to send a real follow-up instruction to that teammate.
 - If the result only says teammate_spawned, wait for a teammate mailbox message
   or coordinate via team messaging tools instead of spawning another Agent.
+- If a team-scoped Agent call fails with "Already leading team", do not call
+  TeamCreate again for the same lead; delete the stale team with TeamDelete or
+  retry with a new team name.
 - Do not end the turn, finalize the response, or start shutdown while unread
   teammate mailbox results are still expected.
 `))
@@ -980,6 +985,8 @@ Compatibility note for GPT backends:
   team exists.
 - In team mode, concrete teammate results should be collected from the team
   mailbox instead of guessing task completion from spawn acknowledgements.
+- If TeamCreate returns "Already leading team", do not retry TeamCreate in a
+  loop; delete the stale team with TeamDelete or switch to a new team name.
 - Collect unread team mailbox results before finalizing the response or
   starting team shutdown.
 `))
@@ -1131,14 +1138,6 @@ func analyzeClaudePendingTeamMailboxState(messages []claudeMessage) (claudePendi
 					continue
 				}
 				switch strings.TrimSpace(block.Name) {
-				case "Agent":
-					if !hasNonEmptyStringField(block.Input, "team_name") {
-						continue
-					}
-					name, _ := block.Input["name"].(string)
-					if name = strings.TrimSpace(name); name != "" {
-						spawned[name] = struct{}{}
-					}
 				case "SendMessage":
 					recipient := parseClaudeShutdownRequestRecipient(block.Input)
 					if recipient == "" {

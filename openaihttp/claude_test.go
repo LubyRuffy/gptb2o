@@ -20,14 +20,14 @@ import (
 )
 
 type stubChatModel struct {
-	generateResp *schema.Message
-	generateErr  error
-	generateHook func(input []*schema.Message)
-	streamMsgs   []*schema.Message
-	streamErr    error
-	streamRecvErr error
+	generateResp       *schema.Message
+	generateErr        error
+	generateHook       func(input []*schema.Message)
+	streamMsgs         []*schema.Message
+	streamErr          error
+	streamRecvErr      error
 	streamRecvErrAfter int
-	streamHook   func(input []*schema.Message)
+	streamHook         func(input []*schema.Message)
 }
 
 func (s *stubChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einoModel.Option) (*schema.Message, error) {
@@ -1207,6 +1207,121 @@ func TestClaudeMessages_Stream_PartialTeamMailboxResponseStillPausesTurn(t *test
 	require.Equal(t, "pause_turn", stopReason)
 }
 
+func TestClaudeMessages_Stream_PartialTeamMailboxWaitingTextStillPausesTurn(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				streamMsgs: []*schema.Message{{Content: "Still waiting on the other two review results."}},
+				streamHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "Wait for teammate mailbox messages")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":true,
+  "max_tokens":1024,
+  "messages":[
+    {"role":"assistant","content":[
+      {"type":"tool_use","id":"call_1","name":"Agent","input":{"name":"worker-1","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}},
+      {"type":"tool_use","id":"call_2","name":"Agent","input":{"name":"worker-2","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}},
+      {"type":"tool_use","id":"call_3","name":"Agent","input":{"name":"worker-3","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}}
+    ]},
+    {"role":"user","content":[
+      {"type":"tool_result","tool_use_id":"call_1","content":"Spawned successfully.\nagent_id: worker-1@parallel-proof-team\nname: worker-1\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."},
+      {"type":"tool_result","tool_use_id":"call_2","content":"Spawned successfully.\nagent_id: worker-2@parallel-proof-team\nname: worker-2\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."},
+      {"type":"tool_result","tool_use_id":"call_3","content":"Spawned successfully.\nagent_id: worker-3@parallel-proof-team\nname: worker-3\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."}
+    ]},
+    {"role":"user","content":"<teammate-message teammate_id=\"worker-1\">{\"name\":\"worker-1\",\"start_ns\":1,\"end_ns\":2}</teammate-message>"}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var stopReason string
+	var sawWaitingText bool
+	for _, ev := range events {
+		if ev.Name == "content_block_delta" {
+			delta, _ := ev.Data["delta"].(map[string]any)
+			if strings.Contains(stringValue(delta["text"]), "Still waiting on the other two review results.") {
+				sawWaitingText = true
+			}
+			continue
+		}
+		if ev.Name != "message_delta" {
+			continue
+		}
+		delta, _ := ev.Data["delta"].(map[string]any)
+		stopReason = stringValue(delta["stop_reason"])
+	}
+	require.True(t, sawWaitingText)
+	require.Equal(t, "pause_turn", stopReason)
+}
+
+func TestClaudeMessages_NonStream_PartialTeamMailboxWaitingTextStillPausesTurn(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("Still waiting on the other two review results.", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "Wait for teammate mailbox messages")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "messages":[
+    {"role":"assistant","content":[
+      {"type":"tool_use","id":"call_1","name":"Agent","input":{"name":"worker-1","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}},
+      {"type":"tool_use","id":"call_2","name":"Agent","input":{"name":"worker-2","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}},
+      {"type":"tool_use","id":"call_3","name":"Agent","input":{"name":"worker-3","team_name":"parallel-proof-team","prompt":"run one bash","description":"run one bash"}}
+    ]},
+    {"role":"user","content":[
+      {"type":"tool_result","tool_use_id":"call_1","content":"Spawned successfully.\nagent_id: worker-1@parallel-proof-team\nname: worker-1\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."},
+      {"type":"tool_result","tool_use_id":"call_2","content":"Spawned successfully.\nagent_id: worker-2@parallel-proof-team\nname: worker-2\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."},
+      {"type":"tool_result","tool_use_id":"call_3","content":"Spawned successfully.\nagent_id: worker-3@parallel-proof-team\nname: worker-3\nteam_name: parallel-proof-team\nThe agent is now running and will receive instructions via mailbox."}
+    ]},
+    {"role":"user","content":"<teammate-message teammate_id=\"worker-1\">{\"name\":\"worker-1\",\"start_ns\":1,\"end_ns\":2}</teammate-message>"}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "pause_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "Still waiting on the other two review results.", resp.Content[0].Text)
+}
+
 func TestClaudeMessages_Stream_ShutdownApprovalsStillPendingPausesTurn(t *testing.T) {
 	h, err := newClaudeCompatHandler(claudeCompatConfig{
 		Now: time.Now,
@@ -1485,6 +1600,23 @@ func TestNeedsClaudePendingTeamMailboxReminder_SkipsWhenMailboxAlreadyPresent(t 
 	require.False(t, need)
 }
 
+func TestNeedsClaudePendingTeamMailboxReminder_SkipsFailedTeamScopedAgentSpawn(t *testing.T) {
+	messages := []claudeMessage{
+		{
+			Role:    "assistant",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[{"type":"tool_use","id":"call_1","name":"Agent","input":{"name":"worker-1","team_name":"review-simplify","prompt":"run one bash","description":"run one bash"}}]`)},
+		},
+		{
+			Role:    "user",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[{"type":"tool_result","tool_use_id":"call_1","content":"Team \"review-simplify\" does not exist. Call spawnTeam first to create the team."}]`)},
+		},
+	}
+
+	need, err := needsClaudePendingTeamMailboxReminder(messages)
+	require.NoError(t, err)
+	require.False(t, need)
+}
+
 func TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions(t *testing.T) {
 	tools, err := convertClaudeTools([]claudeTool{
 		{
@@ -1526,9 +1658,14 @@ func TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions(t *testing.T)
 	require.Contains(t, tools[0].Function.Description, "teammate mailbox")
 	require.Contains(t, tools[0].Function.Description, "not a read-output/poll primitive")
 	require.Contains(t, tools[0].Function.Description, "Do not end the turn")
+	require.Contains(t, tools[0].Function.Description, "Already leading team")
+	require.Contains(t, tools[0].Function.Description, "TeamDelete")
+	require.Contains(t, tools[0].Function.Description, "new team name")
 	require.Contains(t, tools[1].Function.Description, "team mailbox")
 	require.Contains(t, tools[1].Function.Description, "does not run tasks by itself")
 	require.Contains(t, tools[1].Function.Description, "before finalizing the response")
+	require.Contains(t, tools[1].Function.Description, "Already leading team")
+	require.Contains(t, tools[1].Function.Description, "delete the stale team")
 	require.Contains(t, tools[2].Function.Description, "mailbox")
 	require.Contains(t, tools[2].Function.Description, "concrete result")
 	require.Contains(t, tools[2].Function.Description, "shutdown_approved")

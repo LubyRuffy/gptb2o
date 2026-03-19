@@ -52,6 +52,13 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260319-214500 经验教训：pending mailbox 只能由成功 spawn / 实际 mailbox 结果驱动，不能由 Agent tool_use 预判
+
+- 现象：Claude Code 2.1.79 执行 `/simplify` 时，lead 先发 team-scoped `Agent`，本地工具返回 `Team "review-simplify" does not exist`；随后又遇到 `Already leading team`。兼容层却仍插入“Teammates were just spawned, wait for mailbox”系统提醒，导致会话卡在等待并最终 `context canceled`。
+- 根因：`needsClaudePendingTeamMailboxReminder` 在扫描历史消息时，把 assistant 发出的 team-scoped `Agent` `tool_use` 直接记进 `spawned` 集合，没有等待成功的 spawn ack（`Spawned successfully ... receive instructions via mailbox`）或真实 teammate mailbox 消息，因此把失败的 spawn 也误判成了 pending teammate。
+- 处置：移除基于 `Agent` `tool_use` 的预判，只在成功 spawn 的 `tool_result` 或真实 teammate mailbox 结果出现后才计入 pending；并补充单元测试覆盖“team-scoped Agent 失败时不得注入 pending mailbox reminder”。
+- 预防：以后凡是做 agent/team 生命周期差集判断，集合来源必须是“已确认成功的状态转移”，不能用意图信号（tool_use、请求发出）替代完成信号（ack、mailbox、approved）。
+
 ## 20260312-214500 经验教训：Agent 返回的 agentId 不能让模型自行脑补成 task_id
 
 - 现象：Claude Code 本地 `Agent` 工具完成后，tool result 里只给出 `agentId: ...` 文本；GPT backend 在部分真实会话里会继续调用 `TaskOutput`，并把这个 `agentId` 直接塞进 `task_id`，触发 `No task found with ID`。

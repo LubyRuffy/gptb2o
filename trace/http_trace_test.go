@@ -79,3 +79,35 @@ func TestTracer_WrapHTTP_CapturesStreamBody(t *testing.T) {
 	require.Equal(t, "text/event-stream", events[1].ContentType)
 	require.Contains(t, events[1].Body, "event: message_start")
 }
+
+func TestTracer_WrapHTTP_SSEErrorSetsInteractionErrorSummary(t *testing.T) {
+	t.Parallel()
+
+	store, err := OpenStore(filepath.Join(t.TempDir(), "trace.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	tracer := NewTracer(store, TracerOptions{MaxBodyBytes: 512})
+	handler := tracer.WrapHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_start\"}\n\n"))
+		_, _ = w.Write([]byte("event: error\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"backend recv down\"}}\n\n"))
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"gpt-5.3-codex","stream":true}`))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	interactionID := w.Header().Get("X-GPTB2O-Interaction-ID")
+	require.NotEmpty(t, interactionID)
+
+	got, events, err := store.GetInteraction(interactionID)
+	require.NoError(t, err)
+	require.Equal(t, "api_error: backend recv down", got.ErrorSummary)
+	require.Len(t, events, 2)
+	require.Equal(t, EventClientResponse, events[1].Kind)
+	require.Contains(t, events[1].Body, "event: error")
+}

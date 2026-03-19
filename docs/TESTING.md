@@ -60,6 +60,8 @@ GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 - Claude `/v1/messages` 基础 handler 行为
 - `tool_choice` 常见模式
 - SSE 文本 / tool_use 事件顺序
+- backend stream 在首个 SSE 事件前异常中断时，必须返回兼容错误而不是空 `end_turn`
+- backend stream 在已写出部分 SSE 后异常中断时，必须发送 `event: error`，而不是继续输出正常 `message_stop`
 - teammate `Task` / `Agent` round-trip 真实 CLI 路径
 - agent teams pending mailbox 的 `pause_turn` 行为，以及“部分 teammate 结果到达后仍保持 pending”的差集判断
 - shutdown 阶段的 `pause_turn` 行为，以及“shutdown_request 已发出但 approvals 未齐前仍保持 pending”的差集判断
@@ -133,4 +135,16 @@ go test ./openaihttp -run 'TestClaudeMessages_(NonStream_PendingTeamMailboxEmpty
 
 ```bash
 go test ./openaihttp -run 'TestClaudeMessages_(NonStream_ShutdownApprovalsStillPendingPausesTurn|Stream_ShutdownApprovalsStillPendingPausesTurn)|TestNeedsClaudePendingTeamMailboxReminder_(ShutdownApprovalsStillPending|SkipsWhenShutdownApprovalsArrive)' -v
+```
+
+如果要覆盖“backend stream 首包前断流不能被误报为空 `end_turn`”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestClaudeMessages_Stream_Backend(Creation|Recv)ErrorUsesCompatError' -v
+```
+
+如果要覆盖“backend stream 已写出部分 SSE 后断流必须转成 `event: error`”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestClaudeMessages_Stream_BackendRecvErrorAfterStartEmitsSSEError' -v
 ```

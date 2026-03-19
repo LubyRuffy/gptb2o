@@ -36,6 +36,27 @@ func writeOpenAIError(w http.ResponseWriter, statusCode int, message string) {
 	_ = json.NewEncoder(w).Encode(errResp)
 }
 
+func claudeErrorTypeForStatus(statusCode int) string {
+	switch statusCode {
+	case http.StatusBadRequest:
+		return "invalid_request_error"
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusServiceUnavailable:
+		return "overloaded_error"
+	default:
+		return "api_error"
+	}
+}
+
 func normalizeBasePath(basePath string) string {
 	basePath = strings.TrimSpace(basePath)
 	if basePath == "" {

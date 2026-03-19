@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- 修复 Claude `/v1/messages` stream 在首个 SSE 事件前遭遇 backend `Recv`/断流错误时，仍被误报为 `200` 空 `end_turn` 的问题
+- 修复 Claude `/v1/messages` stream 在已输出部分 SSE 后遭遇 backend `Recv`/断流错误时，仍被误报为正常 `message_stop` 的问题
 - 修复无法回放一次异常请求的问题
 - 修复 Claude Code 2.1.74 teammate 集成测试仍依赖旧 `Task` schema 的兼容漂移
 - 修复 Claude Code 本地 `Agent` 返回 `agentId` 时，GPT backend 容易把它误当成 `TaskOutput.task_id` 的兼容歧义

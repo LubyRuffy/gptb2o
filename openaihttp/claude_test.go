@@ -25,6 +25,8 @@ type stubChatModel struct {
 	generateHook func(input []*schema.Message)
 	streamMsgs   []*schema.Message
 	streamErr    error
+	streamRecvErr error
+	streamRecvErrAfter int
 	streamHook   func(input []*schema.Message)
 }
 
@@ -41,6 +43,26 @@ func (s *stubChatModel) Stream(ctx context.Context, input []*schema.Message, opt
 	}
 	if s.streamErr != nil {
 		return nil, s.streamErr
+	}
+	if s.streamRecvErr != nil {
+		sr, sw := schema.Pipe[*schema.Message](1)
+		go func() {
+			defer sw.Close()
+			if s.streamRecvErrAfter > len(s.streamMsgs) {
+				s.streamRecvErrAfter = len(s.streamMsgs)
+			}
+			for i, msg := range s.streamMsgs {
+				sw.Send(msg, nil)
+				if s.streamRecvErrAfter > 0 && i+1 == s.streamRecvErrAfter {
+					sw.Send(nil, s.streamRecvErr)
+					return
+				}
+			}
+			if s.streamRecvErrAfter == 0 {
+				sw.Send(nil, s.streamRecvErr)
+			}
+		}()
+		return sr, nil
 	}
 	return schema.StreamReaderFromArray(s.streamMsgs), nil
 }
@@ -344,6 +366,56 @@ func TestClaudeMessages_Stream_BackendCreationErrorUsesCompatError(t *testing.T)
 	require.Equal(t, http.StatusBadGateway, w.Code)
 	require.Contains(t, w.Body.String(), "backend stream down")
 	require.NotContains(t, w.Body.String(), "event: message_start")
+}
+
+func TestClaudeMessages_Stream_BackendRecvErrorUsesCompatError(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{streamRecvErr: &httpError{Status: http.StatusBadGateway, Message: "backend recv down"}}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), "backend recv down")
+	require.NotContains(t, w.Body.String(), "event: message_start")
+}
+
+func TestClaudeMessages_Stream_BackendRecvErrorAfterStartEmitsSSEError(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				streamMsgs:         []*schema.Message{{Content: "hello"}},
+				streamRecvErr:      &httpError{Status: http.StatusBadGateway, Message: "backend recv down"},
+				streamRecvErrAfter: 1,
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	out := w.Body.String()
+	require.Contains(t, out, "event: message_start\n")
+	require.Contains(t, out, "event: error\n")
+	require.Contains(t, out, `"type":"error"`)
+	require.Contains(t, out, `"message":"backend recv down"`)
+	require.NotContains(t, out, "event: message_stop\n")
 }
 
 func TestClaudeMessages_Stream_TextEventSequence(t *testing.T) {

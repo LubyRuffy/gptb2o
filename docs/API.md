@@ -72,6 +72,8 @@ Claude Messages 兼容接口。
 - 在 agent teams 场景下，如果 lead 已 spawn teammate 但 concrete mailbox 结果尚未到达，空响应 turn 会返回 `pause_turn`，避免误把等待 mailbox 的中间态暴露成 `end_turn`
 - pending mailbox 判断会按“已 spawn teammate 集合 - 已收到 concrete mailbox result 集合”计算；`idle_notification` / `shutdown_approved` 之类控制消息不会被误判成任务完成
 - lead 发出 `shutdown_request` 之后，也会继续等待对应的 `shutdown_approved` mailbox 消息；在 approvals 未齐前，空响应 turn 同样会保持 `pause_turn`
+- 如果 backend stream 在首个 Claude SSE 事件写出前就异常中断，接口会直接返回兼容错误响应，而不是伪造一个 `200` 的空 `end_turn`
+- 如果 backend stream 在已写出部分 Claude SSE 事件后中途异常中断，接口会发送 Claude 风格 `event: error`，而不是继续补一个正常 `message_stop`
 - 若 backend 明确拒绝 `temperature` 或 `top_p`，会自动剥离不兼容采样参数后重试，兼容真实 Claude Code 子代理请求
 - `stream=true` 返回 Claude 风格 SSE
 - `stream=false` 返回 Claude 风格 `message` JSON

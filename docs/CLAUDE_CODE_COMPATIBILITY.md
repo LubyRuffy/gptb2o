@@ -38,6 +38,7 @@
 | --- | --- | --- |
 | Claude-style SSE text streaming | Supported | `/v1/messages` `stream=true` 返回 Claude 风格 SSE |
 | `message_start` / `content_block_*` / `message_stop` main flow | Supported | 已有 stream handler tests |
+| streaming error signaling after partial SSE output | Supported | 首包后中途断流会发 `event: error`，不再伪装成正常 `message_stop` |
 | tool-use streaming | Supported | 包括 `tool_use` 内容块输出 |
 | SSE `input_json_delta` for tool input | Supported with tests | 对 Task/Agent 路径很重要 |
 | exact event-order parity for every edge case | Partial | 优先保证 Claude Code 常见路径，不承诺全部边角语义完全一致 |

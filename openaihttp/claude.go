@@ -3,7 +3,9 @@ package openaihttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -468,6 +470,12 @@ func (h *claudeCompatHandler) writeMessagesStream(
 	}
 	defer sr.Close()
 
+	firstMsg, firstRecvErr := sr.Recv()
+	if firstRecvErr != nil && !errors.Is(firstRecvErr, io.EOF) {
+		h.writeError(w, httpStatusFromError(firstRecvErr), httpMessageFromError(firstRecvErr))
+		return
+	}
+
 	msgID := "msg_" + uuid.NewString()
 	startUsage := claudeUsage{InputTokens: inputTokens, OutputTokens: 0}
 	writeClaudeSSEEvent(w, flusher, "message_start", map[string]any{
@@ -511,6 +519,17 @@ func (h *claudeCompatHandler) writeMessagesStream(
 			"index": textBlockIndex,
 		})
 		textBlockOpen = false
+	}
+
+	writeStreamError := func(err error) {
+		closeTextBlock()
+		writeClaudeSSEEvent(w, flusher, "error", map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    claudeErrorTypeForStatus(httpStatusFromError(err)),
+				"message": httpMessageFromError(err),
+			},
+		})
 	}
 	startTextBlock := func() {
 		if textBlockOpen {
@@ -677,17 +696,34 @@ func (h *claudeCompatHandler) writeMessagesStream(
 		}
 	}
 
+	processMsg := func(msg *schema.Message) {
+		if msg == nil {
+			return
+		}
+		emitTextSafe(msg.Content)
+	}
+
+	if firstMsg != nil {
+		processMsg(firstMsg)
+	}
+
 	for {
 		flushToolCalls()
-		msg, recvErr := sr.Recv()
-		if recvErr != nil {
+		if firstRecvErr != nil {
 			flushToolCalls()
 			break
 		}
-		if msg == nil {
-			continue
+		msg, recvErr := sr.Recv()
+		if recvErr != nil {
+			if !errors.Is(recvErr, io.EOF) {
+				flushToolCalls()
+				writeStreamError(recvErr)
+				return
+			}
+			flushToolCalls()
+			break
 		}
-		emitTextSafe(msg.Content)
+		processMsg(msg)
 		if stopTriggered {
 			break
 		}

@@ -1617,6 +1617,43 @@ func TestNeedsClaudePendingTeamMailboxReminder_SkipsFailedTeamScopedAgentSpawn(t
 	require.False(t, need)
 }
 
+func TestClaudeMessages_NonStream_AddsStaleTeamRetryReminder(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("Use a new unique team name.", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "Already leading team")
+					require.Contains(t, last.Content, "Do not call TeamDelete just to recreate the same team name")
+					require.Contains(t, last.Content, "Prefer reusing the existing team")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "messages":[
+    {"role":"assistant","content":[{"type":"tool_use","id":"team_create_1","name":"TeamCreate","input":{"team_name":"simplify-5fd0f37","description":"review commit"}}]},
+    {"role":"user","content":[{"type":"tool_result","tool_use_id":"team_create_1","content":"Already leading team \"simplify-5fd0f37\". A leader can only manage one team at a time. Use TeamDelete to end the current team before creating a new one."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions(t *testing.T) {
 	tools, err := convertClaudeTools([]claudeTool{
 		{
@@ -1660,12 +1697,14 @@ func TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions(t *testing.T)
 	require.Contains(t, tools[0].Function.Description, "Do not end the turn")
 	require.Contains(t, tools[0].Function.Description, "Already leading team")
 	require.Contains(t, tools[0].Function.Description, "TeamDelete")
-	require.Contains(t, tools[0].Function.Description, "new team name")
+	require.Contains(t, tools[0].Function.Description, "Prefer using a new unique team name")
+	require.Contains(t, tools[0].Function.Description, "Only use TeamDelete after teammate shutdown is confirmed")
 	require.Contains(t, tools[1].Function.Description, "team mailbox")
 	require.Contains(t, tools[1].Function.Description, "does not run tasks by itself")
 	require.Contains(t, tools[1].Function.Description, "before finalizing the response")
 	require.Contains(t, tools[1].Function.Description, "Already leading team")
-	require.Contains(t, tools[1].Function.Description, "delete the stale team")
+	require.Contains(t, tools[1].Function.Description, "Prefer using a new unique team name")
+	require.Contains(t, tools[1].Function.Description, "Only use TeamDelete after teammate shutdown is confirmed")
 	require.Contains(t, tools[2].Function.Description, "mailbox")
 	require.Contains(t, tools[2].Function.Description, "concrete result")
 	require.Contains(t, tools[2].Function.Description, "shutdown_approved")

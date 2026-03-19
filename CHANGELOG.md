@@ -23,6 +23,7 @@
 
 - 修复 Claude agent teams 在 team-scoped `Agent` 实际 spawn 失败时，仍被误判为“teammates 已 spawn、应等待 mailbox”，进而把会话错误带入 `pause_turn` / 长时间卡住的问题
 - 修复 Claude agent teams 遇到本地 `Already leading team` 脏状态时，兼容提示仍可能诱导模型重复 `TeamCreate`，而不是先 `TeamDelete` 或换新 team 名的问题
+- 修复 Claude agent teams 遇到本地 `Already leading team` 时，兼容层仍可能放任模型先 `TeamDelete` 再用同名 team / reviewer 立即重建，导致旧 teammate 仍在运行时出现同名实例并存的问题
 - 修复 Claude `/v1/messages` stream 在首个 SSE 事件前遭遇 backend `Recv`/断流错误时，仍被误报为 `200` 空 `end_turn` 的问题
 - 修复 Claude `/v1/messages` stream 在已输出部分 SSE 后遭遇 backend `Recv`/断流错误时，仍被误报为正常 `message_stop` 的问题
 - 修复无法回放一次异常请求的问题

@@ -104,6 +104,13 @@ Wait for teammate mailbox messages with shutdown approvals before finalizing the
 Do not finalize the response or clean up the team until the expected shutdown approvals are available.
 </system-reminder>`
 
+const claudeStaleTeamRetryReminder = `<system-reminder>
+The local team tool reported "Already leading team", which means this lead may still own an active team.
+Do not call TeamDelete just to recreate the same team name or re-spawn the same teammate names.
+Prefer reusing the existing team if it is still active; otherwise create a new unique team name before spawning reviewers again.
+Only use TeamDelete after teammate shutdown is confirmed and no running teammates still need to report results.
+</system-reminder>`
+
 type claudeMessageResponse struct {
 	ID           string               `json:"id"`
 	Type         string               `json:"type"`
@@ -259,8 +266,16 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	staleTeamRetryReminder, err := claudeStaleTeamRetryReminderText(req.Messages)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if pendingTeamMailboxReminder != "" {
 		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
+	}
+	if staleTeamRetryReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(staleTeamRetryReminder))
 	}
 	inputTokens := estimateClaudeInputTokens(chatInput, tools)
 	outputEffort := ""
@@ -431,8 +446,16 @@ func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	staleTeamRetryReminder, err := claudeStaleTeamRetryReminderText(req.Messages)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if pendingTeamMailboxReminder != "" {
 		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
+	}
+	if staleTeamRetryReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(staleTeamRetryReminder))
 	}
 
 	h.writeJSON(w, claudeCountTokensResponse{
@@ -972,8 +995,11 @@ Compatibility note for GPT backends:
 - If the result only says teammate_spawned, wait for a teammate mailbox message
   or coordinate via team messaging tools instead of spawning another Agent.
 - If a team-scoped Agent call fails with "Already leading team", do not call
-  TeamCreate again for the same lead; delete the stale team with TeamDelete or
-  retry with a new team name.
+  TeamCreate again for the same lead.
+- Prefer using a new unique team name instead of deleting and recreating the
+  same team immediately.
+- Only use TeamDelete after teammate shutdown is confirmed and no running
+  teammates still need to report results.
 - Do not end the turn, finalize the response, or start shutdown while unread
   teammate mailbox results are still expected.
 `))
@@ -986,7 +1012,11 @@ Compatibility note for GPT backends:
 - In team mode, concrete teammate results should be collected from the team
   mailbox instead of guessing task completion from spawn acknowledgements.
 - If TeamCreate returns "Already leading team", do not retry TeamCreate in a
-  loop; delete the stale team with TeamDelete or switch to a new team name.
+  loop.
+- Prefer using a new unique team name instead of deleting and recreating the
+  same team immediately.
+- Only use TeamDelete after teammate shutdown is confirmed and no running
+  teammates still need to report results.
 - Collect unread team mailbox results before finalizing the response or
   starting team shutdown.
 `))
@@ -1093,6 +1123,63 @@ func claudePendingTeamMailboxReminderText(messages []claudeMessage) (string, err
 		return "", err
 	}
 	return state.reminderText(), nil
+}
+
+func claudeStaleTeamRetryReminderText(messages []claudeMessage) (string, error) {
+	need, err := needsClaudeStaleTeamRetryReminder(messages)
+	if err != nil {
+		return "", err
+	}
+	if !need {
+		return "", nil
+	}
+	return claudeStaleTeamRetryReminder, nil
+}
+
+func needsClaudeStaleTeamRetryReminder(messages []claudeMessage) (bool, error) {
+	toolNamesByID := make(map[string]string)
+
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "" {
+			continue
+		}
+		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
+		if err != nil {
+			return false, err
+		}
+		switch role {
+		case "assistant":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_use") {
+					continue
+				}
+				toolUseID := strings.TrimSpace(block.ID)
+				if toolUseID == "" {
+					continue
+				}
+				toolNamesByID[toolUseID] = strings.TrimSpace(block.Name)
+			}
+		case "user":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_result") {
+					continue
+				}
+				toolName := strings.TrimSpace(toolNamesByID[strings.TrimSpace(block.ToolUseID)])
+				if toolName != "TeamCreate" && toolName != "Agent" {
+					continue
+				}
+				output, err := claudeContentToText(block.Content)
+				if err != nil {
+					return false, err
+				}
+				if strings.Contains(strings.TrimSpace(output), `Already leading team "`) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 type claudePendingTeamMailboxState struct {

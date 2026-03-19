@@ -52,6 +52,13 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260319-221800 经验教训：`Already leading team` 不能再默认引导先 `TeamDelete` 后同名重建
+
+- 现象：Claude Code 2.1.79 在 `/simplify` review team 场景里，team-scoped `Agent` 先因 `Team "... does not exist"` 失败，随后 `TeamCreate` 返回 `Already leading team`；模型按提示执行 `TeamDelete` 后，又用同一个 `team_name` 和同名 reviewer 重新 spawn，结果旧 teammate pane 仍在运行，新旧同名实例并存。
+- 根因：兼容层之前只在 tool description 里给出“`TeamDelete` 或换新 team 名”这种软提示，没有表达清楚 `TeamDelete` 只证明 team 目录/worktree 被清理，并不等于旧 teammate 进程一定已停；因此模型会把“删 team 后同名重建”误当成安全恢复路径。
+- 处置：新增专门的 stale-team reminder；当历史消息里出现 `Already leading team` 时，显式禁止“先 `TeamDelete` 再用同名 team / reviewer 立即重建”，并把 tool description 收紧为“优先复用现有 team 或改唯一新 team 名，只有在 teammate shutdown 已确认后才允许 `TeamDelete`”。
+- 预防：以后凡是本地 agent/team 工具返回“lead 已占用 / already leading”一类状态，不能把“资源清理成功”当成“进程生命周期已结束”的等价信号；对 team 删除、worktree 删除、目录删除，都必须和 teammate shutdown/approval 信号分开建模。
+
 ## 20260319-214500 经验教训：pending mailbox 只能由成功 spawn / 实际 mailbox 结果驱动，不能由 Agent tool_use 预判
 
 - 现象：Claude Code 2.1.79 执行 `/simplify` 时，lead 先发 team-scoped `Agent`，本地工具返回 `Team "review-simplify" does not exist`；随后又遇到 `Already leading team`。兼容层却仍插入“Teammates were just spawned, wait for mailbox”系统提醒，导致会话卡在等待并最终 `context canceled`。

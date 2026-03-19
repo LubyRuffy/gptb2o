@@ -24,7 +24,7 @@
 - 把 Claude `output_config.effort` 映射到 backend `reasoning.effort`
 - 透传 Claude 工具定义与 tool_use/tool_result 往返
 - 对 teammate 协议兼容 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
-- 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；若本地 team 已落入 `Already leading team` 脏状态，也会明确提示优先 `TeamDelete` 或切换新 team 名，而不是循环重试 `TeamCreate`
+- 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；若本地 team 已落入 `Already leading team` 脏状态，也会明确提示不要在未确认 teammate 已 shutdown 时先 `TeamDelete` 再同名重建，而应优先复用现有 team 或切换新 team 名
 - 对 agent teams pending mailbox 做差集判断：只有所有已 spawn teammate 都收到 concrete mailbox result 后，才解除等待；控制消息不会被误判成任务完成
 - 对 shutdown 阶段继续做差集判断：只有所有已发送 `shutdown_request` 的 teammate 都回 `shutdown_approved` 后，才允许 cleanup
 

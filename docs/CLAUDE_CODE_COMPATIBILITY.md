@@ -49,8 +49,8 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | `Task` | Supported | 兼容旧 teammate 工具协议 |
-| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示；若遇到 `Already leading team`，会明确提示不要重复 `TeamCreate`，而是先 `TeamDelete` 或改用新 team 名 |
-| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup”；`TeamCreate` 遇到 `Already leading team` 时，会提示不要在同一 lead 上循环重试 |
+| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示；若遇到 `Already leading team`，会明确提示不要重复 `TeamCreate`，也不要为了复用同名 team 立即 `TeamDelete`，而应优先复用现有 team 或改用新的唯一 team 名 |
+| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup”；`TeamCreate` 遇到 `Already leading team` 时，会提示不要在同一 lead 上循环重试，也不要在未确认 teammate 已 shutdown 时立刻 `TeamDelete` 后同名重建 |
 | `TaskOutput` / `TaskStop` | Partially supported | 已做协议透传，并补充 `task_id` 只接受真实 task id 的语义提示 |
 | new/old teammate protocol coexistence | Supported | 文档与测试均以双协议兼容为目标 |
 | real Claude CLI teammate round-trip | Supported with tests | 仓库内已有真实 CLI 集成测试 |

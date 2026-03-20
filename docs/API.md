@@ -68,7 +68,7 @@ Claude Messages 兼容接口。
 - 支持 `output_config.effort`
 - 支持 `tool_use` / `tool_result`
 - 支持 teammate 新旧协议工具透传：`Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
-- 会为 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 工具补充语义提示，避免把 `agentId` 误作 `task_id`，减少把 `Agent.resume` 误当作轮询 teammate 输出的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；如果本地工具返回 `Already leading team`，会明确禁止“先 `TeamDelete` 再用同名 team / 同名 reviewer 立即重建”的模式，优先复用现有 team，或改用新的唯一 team 名
+- 会为 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 工具补充语义提示，避免把 `agentId` 误作 `task_id`，减少把 `Agent.resume` 误当作轮询 teammate 输出的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；如果本地工具返回 `Already leading team`，会明确禁止“先 `TeamDelete` 再用同名 team / 同名 reviewer 立即重建”的模式，并把出错的 `team_name` 标成当前恢复分支内不可再用，要求改用新的唯一 team 名；如果 team-scoped `Agent` 直接返回 `Team "<name>" does not exist`，会先禁止继续 `Agent` 重试，只保留 `TeamCreate` 恢复入口；若 `/simplify` 的三名 reviewer 已在当前会话分支通过 teammate mailbox 返回一整轮评审结果，兼容层会直接阻止后续重复 `Agent` / `TeamCreate`，要求模型汇总现有 reviewer 结果而不是再起第二轮 reviewer
 - 在 agent teams 场景下，如果 lead 已 spawn teammate 但 concrete mailbox 结果尚未到达，空响应 turn 会返回 `pause_turn`，避免误把等待 mailbox 的中间态暴露成 `end_turn`
 - 即使 lead 在等待 teammate mailbox 时输出了 `Still waiting...` 一类中间态文本，只要 mailbox 仍 pending，该 turn 也会保持 `pause_turn`，避免 Claude Code 将其误判为正常收束并重复拉起 reviewer
 - pending mailbox 判断会按“已 spawn teammate 集合 - 已收到 concrete mailbox result 集合”计算；`idle_notification` / `shutdown_approved` 之类控制消息不会被误判成任务完成

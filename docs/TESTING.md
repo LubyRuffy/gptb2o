@@ -65,6 +65,7 @@ GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 - teammate `Task` / `Agent` round-trip 真实 CLI 路径
 - agent teams pending mailbox 的 `pause_turn` 行为，以及“部分 teammate 结果到达后仍保持 pending”的差集判断
 - shutdown 阶段的 `pause_turn` 行为，以及“shutdown_request 已发出但 approvals 未齐前仍保持 pending”的差集判断
+- `/simplify` reviewer 完成态对主线程 mailbox 回灌结果的识别，以及 reviewer 已完成后禁止重复 spawn 的回归
 
 ### 真实 backend 集成测试
 
@@ -113,9 +114,10 @@ go run ./cmd/gptb2o-server --show-interaction ia_xxx
 3. backend 回给 `gptb2o`
 4. `gptb2o` 最终回给客户端
 
-如果是 stream 请求，先看回放顶部的 `error_summary`：
+如果是 stream 请求，先看回放顶部的 `error_summary`；如果是 Claude `/v1/messages` teammate / team 恢复问题，再先看 `recovery_summary`：
 - 为空通常表示这轮正常结束
 - 若出现 `api_error: ...` / `overloaded_error: ...` 等，说明 stream 内已经发过 `event: error`
+- 若出现 `missing-team:...` / `stale-team:...` / `duplicate-simplify-reviewer-retry`，说明兼容层已把典型恢复状态提炼出来；其中 `duplicate-simplify-reviewer-retry` 只按真实 `Agent` tool_use 计数，不会再把 diff 文本里的 reviewer 名称误报成协议级重复 spawn
 
 ### 5. 直接查 SQLite 时的固定顺序
 
@@ -151,9 +153,10 @@ sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
 
 1. `status_code` 看客户端最终结果
 2. `error_summary` 看 stream 内部是否报错
-3. `seq/kind` 看链路停在 client、backend 还是写回客户端阶段
-4. `summary` 看概要
-5. `body` 只用于补充细节
+3. `recovery_summary` 看是否命中 `missing-team`、`stale-team` 或 reviewer 重试问题
+4. `seq/kind` 看链路停在 client、backend 还是写回客户端阶段
+5. `summary` 看概要
+6. `body` 只用于补充细节
 
 ## 本次相关回归测试
 
@@ -179,16 +182,34 @@ go test ./openaihttp -run 'TestClaudeMessages_(NonStream_PendingTeamMailboxEmpty
 go test ./openaihttp -run 'TestClaudeMessages_(NonStream_ShutdownApprovalsStillPendingPausesTurn|Stream_ShutdownApprovalsStillPendingPausesTurn)|TestNeedsClaudePendingTeamMailboxReminder_(ShutdownApprovalsStillPending|SkipsWhenShutdownApprovalsArrive)' -v
 ```
 
-如果要覆盖“本地 team 已落入 `Already leading team` 时，兼容提示必须引导 `TeamDelete` 或改新 team 名，而不是重复 `TeamCreate`”的回归，再执行：
+如果要覆盖“本地 team 已落入 `Already leading team` 时，兼容提示必须禁止先 `TeamDelete` 再同名重建，并引导复用现有 team 或改唯一新 team 名”的回归，再执行：
 
 ```bash
-go test ./openaihttp -run 'TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions' -v
+go test ./openaihttp -run 'TestClaudeMessages_NonStream_AddsStaleTeamRetryReminder|TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions' -v
+```
+
+如果要覆盖“`Already leading team` 之后仍能走安全恢复路径，并正常产出新的 `TeamCreate` / `Agent` tool_use”的流程回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestClaudeMessages_(NonStream_StaleTeamRetryReminder_AllowsSafeNewTeamCreateFlow|Stream_StaleTeamRetryReminder_AllowsSafeAgentFlow)' -v
+```
+
+如果要覆盖“`/simplify` 首轮三 reviewer 已完成后，兼容层必须禁止第二轮 team / teamless reviewer 重试”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestNeedsClaudeCompletedSimplifyReviewRetryBlock_TrueAfterThreeReviewersComplete|TestClaudeMessages_NonStream_CompletedSimplifyReview_BlocksFurtherAgentAndTeamCreate' -v
 ```
 
 如果要覆盖“team-scoped Agent 实际 spawn 失败时，不能误注入 pending mailbox reminder”的回归，再执行：
 
 ```bash
 go test ./openaihttp -run 'TestNeedsClaudePendingTeamMailboxReminder_SkipsFailedTeamScopedAgentSpawn' -v
+```
+
+如果要覆盖“team-scoped `Agent` 因 team 不存在而失败后，兼容层必须暂时禁用后续 `Agent`，只保留 `TeamCreate` 恢复入口”的回归，再执行：
+
+```bash
+go test ./openaihttp -run 'TestNeedsClaudeMissingTeamRetryReminder_(TrueAfterTeamScopedAgentFailsWithoutTeam|FalseAfterSuccessfulTeamCreate)|TestClaudeMessages_NonStream_MissingTeamState_BlocksOnlyAgentUntilTeamCreateSucceeds' -v
 ```
 
 如果要覆盖“backend stream 首包前断流不能被误报为空 `end_turn`”的回归，再执行：

@@ -34,6 +34,31 @@ type claudeCompatHandler struct {
 	writeError   func(w http.ResponseWriter, statusCode int, message string)
 }
 
+const (
+	claudeStaleTeamBlockedReminderPrefix = `<system-reminder>
+Automatic team recovery is blocked because the local team tool reported "Already leading team".
+Do not attempt any more TeamCreate or Agent teammate spawns in this conversation branch.
+Wait for existing teammate results or require manual cleanup outside this request before retrying team mode.
+</system-reminder>`
+
+	claudeCompletedSimplifyReviewBlockedReminderPrefix = `<system-reminder>
+The simplify reviewers already completed one full review cycle in this conversation branch.
+Do not spawn reuse-reviewer, quality-reviewer, or efficiency-reviewer again.
+Do not retry with TeamCreate, a teamless relaunch, or renamed duplicate reviewers.
+Continue by aggregating the existing reviewer results and applying fixes directly.
+</system-reminder>`
+
+	claudeMissingTeamBlockedReminderPrefix = `<system-reminder>
+A previous Agent call returned "Team does not exist". The team_name parameter has
+been removed from the Agent tool; do not try to work around team routing.
+Simply call Agent normally with the reviewer name and prompt — they will run as
+standalone subagents. Do not skip the agent-spawning phase; the prompt requires
+parallel review agents.
+</system-reminder>`
+)
+
+var claudeSimplifyReviewerNames = []string{"reuse-reviewer", "quality-reviewer", "efficiency-reviewer"}
+
 type claudeMessagesRequest struct {
 	Model         string              `json:"model"`
 	Messages      []claudeMessage     `json:"messages"`
@@ -104,13 +129,6 @@ Wait for teammate mailbox messages with shutdown approvals before finalizing the
 Do not finalize the response or clean up the team until the expected shutdown approvals are available.
 </system-reminder>`
 
-const claudeStaleTeamRetryReminder = `<system-reminder>
-The local team tool reported "Already leading team", which means this lead may still own an active team.
-Do not call TeamDelete just to recreate the same team name or re-spawn the same teammate names.
-Prefer reusing the existing team if it is still active; otherwise create a new unique team name before spawning reviewers again.
-Only use TeamDelete after teammate shutdown is confirmed and no running teammates still need to report results.
-</system-reminder>`
-
 type claudeMessageResponse struct {
 	ID           string               `json:"id"`
 	Type         string               `json:"type"`
@@ -170,10 +188,6 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if strings.TrimSpace(req.Model) == "" {
-		h.writeError(w, http.StatusBadRequest, "model is required")
-		return
-	}
 	if req.MaxTokens <= 0 {
 		h.writeError(w, http.StatusBadRequest, "max_tokens is required")
 		return
@@ -256,28 +270,14 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	chatInput, err := convertClaudeMessages(req.System, req.Messages)
+	prepared, err := prepareClaudeMessagesRequest(tools, req.System, req.Messages)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	pendingTeamMailboxReminder, err := claudePendingTeamMailboxReminderText(req.Messages)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	staleTeamRetryReminder, err := claudeStaleTeamRetryReminderText(req.Messages)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if pendingTeamMailboxReminder != "" {
-		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
-	}
-	if staleTeamRetryReminder != "" {
-		chatInput = append(chatInput, schema.UserMessage(staleTeamRetryReminder))
-	}
-	inputTokens := estimateClaudeInputTokens(chatInput, tools)
+	tools = prepared.tools
+	chatInput := prepared.chatInput
+	inputTokens := prepared.inputTokens
 	outputEffort := ""
 	if req.OutputConfig != nil {
 		outputEffort = normalizeReasoningEffort(req.OutputConfig.Effort)
@@ -302,7 +302,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		chatModel = applyClaudeRequestOptions(chatModel, req.Temperature, req.TopP, outputEffort)
-		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, pendingTeamMailboxReminder != "", disableParallelToolUse, toolCallChan)
+		h.writeMessagesStream(ctx, cancel, w, chatModel, req.Model, chatInput, inputTokens, req.MaxTokens, stopSequences, prepared.pendingTeamMailboxReminder, disableParallelToolUse, toolCallChan)
 		return
 	}
 
@@ -358,7 +358,7 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 	stopSequence := (*string)(nil)
 	if hasToolUse {
 		stopReason = "tool_use"
-	} else if pendingTeamMailboxReminder != "" {
+	} else if prepared.pendingTeamMailboxReminder {
 		stopReason = "pause_turn"
 		stopSequence = nil
 	} else if limitStopReason != "" {
@@ -385,6 +385,68 @@ func (h *claudeCompatHandler) handleMessages(w http.ResponseWriter, r *http.Requ
 		},
 	}
 	h.writeJSON(w, resp)
+}
+
+type claudePreparedMessagesRequest struct {
+	tools                      []openaiapi.OpenAITool
+	chatInput                  []*schema.Message
+	inputTokens                int
+	pendingTeamMailboxReminder bool
+}
+
+func prepareClaudeMessagesRequest(tools []openaiapi.OpenAITool, system claudeContentField, messages []claudeMessage) (claudePreparedMessagesRequest, error) {
+	chatInput, err := convertClaudeMessages(system, messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	pendingTeamMailboxReminder, err := claudePendingTeamMailboxReminderText(messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	staleTeamRetryReminder, err := claudeStaleTeamRetryReminderText(messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	staleTeamBlocked, err := needsClaudeStaleTeamRetryReminder(messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	missingTeamBlocked, err := needsClaudeMissingTeamRetryReminder(messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	completedSimplifyReviewBlocked, err := needsClaudeCompletedSimplifyReviewRetryBlock(messages)
+	if err != nil {
+		return claudePreparedMessagesRequest{}, err
+	}
+	if staleTeamBlocked || completedSimplifyReviewBlocked {
+		tools = filterClaudeStaleTeamRecoveryTools(tools)
+	}
+	// missing-team 场景不再移除 Agent 工具。
+	// /simplify 等 skill 依赖 Agent 启动 reviewer，移除 Agent 会导致模型跳过
+	// agent-spawning 阶段，而本地已启动的 teammate 进程永远收不到指令。
+	// 改为仅通过 system-reminder 引导模型用不带 team_name 的 Agent 调用。
+	if pendingTeamMailboxReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
+	}
+	if staleTeamRetryReminder != "" {
+		chatInput = append(chatInput, schema.UserMessage(staleTeamRetryReminder))
+	}
+	if staleTeamBlocked {
+		chatInput = append(chatInput, schema.UserMessage(claudeStaleTeamBlockedReminderPrefix))
+	}
+	if missingTeamBlocked {
+		chatInput = append(chatInput, schema.UserMessage(claudeMissingTeamBlockedReminderPrefix))
+	}
+	if completedSimplifyReviewBlocked {
+		chatInput = append(chatInput, schema.UserMessage(claudeCompletedSimplifyReviewBlockedReminderPrefix))
+	}
+	return claudePreparedMessagesRequest{
+		tools:                      tools,
+		chatInput:                  chatInput,
+		inputTokens:                estimateClaudeInputTokens(chatInput, tools),
+		pendingTeamMailboxReminder: pendingTeamMailboxReminder != "",
+	}, nil
 }
 
 func applyClaudeRequestOptions(m chatModel, temperature *float32, topP *float32, reasoningEffort string) chatModel {
@@ -436,30 +498,14 @@ func (h *claudeCompatHandler) handleCountTokens(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	chatInput, err := convertClaudeMessages(req.System, req.Messages)
+	prepared, err := prepareClaudeMessagesRequest(tools, req.System, req.Messages)
 	if err != nil {
 		h.writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	pendingTeamMailboxReminder, err := claudePendingTeamMailboxReminderText(req.Messages)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	staleTeamRetryReminder, err := claudeStaleTeamRetryReminderText(req.Messages)
-	if err != nil {
-		h.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if pendingTeamMailboxReminder != "" {
-		chatInput = append(chatInput, schema.UserMessage(pendingTeamMailboxReminder))
-	}
-	if staleTeamRetryReminder != "" {
-		chatInput = append(chatInput, schema.UserMessage(staleTeamRetryReminder))
 	}
 
 	h.writeJSON(w, claudeCountTokensResponse{
-		InputTokens: estimateClaudeInputTokens(chatInput, tools),
+		InputTokens: prepared.inputTokens,
 	})
 }
 
@@ -955,6 +1001,7 @@ func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
+
 	result := make([]openaiapi.OpenAITool, 0, len(tools))
 	nameSeen := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
@@ -967,16 +1014,73 @@ func convertClaudeTools(tools []claudeTool) ([]openaiapi.OpenAITool, error) {
 			continue
 		}
 		nameSeen[key] = struct{}{}
+
+		params := tool.InputSchema
+		if strings.EqualFold(name, "Agent") {
+			params = stripAgentTeamNameProperty(params)
+		}
+
 		result = append(result, openaiapi.OpenAITool{
 			Type: "function",
 			Function: openaiapi.OpenAIToolFunction{
 				Name:        name,
 				Description: rewriteClaudeToolDescription(name, tool.Description),
-				Parameters:  tool.InputSchema,
+				Parameters:  params,
 			},
 		})
 	}
 	return result, nil
+}
+
+// stripAgentTeamNameProperty removes the team_name property from the Agent
+// tool's input schema. When TeamCreate is absent from the tools list, the
+// model cannot register a team, so team_name must never appear in Agent
+// calls—otherwise Claude Code enters team routing and fails with
+// "Team does not exist".
+func stripAgentTeamNameProperty(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	propsRaw, ok := schema["properties"]
+	if !ok {
+		return schema
+	}
+	props, ok := propsRaw.(map[string]any)
+	if !ok {
+		return schema
+	}
+	if _, hasTeamName := props["team_name"]; !hasTeamName {
+		return schema
+	}
+
+	out := make(map[string]any, len(schema))
+	for k, v := range schema {
+		if k == "properties" {
+			newProps := make(map[string]any, len(props))
+			for pk, pv := range props {
+				if pk != "team_name" {
+					newProps[pk] = pv
+				}
+			}
+			out[k] = newProps
+		} else if k == "required" {
+			if reqSlice, ok := v.([]any); ok {
+				filtered := make([]any, 0, len(reqSlice))
+				for _, r := range reqSlice {
+					if s, ok := r.(string); ok && s == "team_name" {
+						continue
+					}
+					filtered = append(filtered, r)
+				}
+				out[k] = filtered
+			} else {
+				out[k] = v
+			}
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func rewriteClaudeToolDescription(name string, description string) string {
@@ -1065,6 +1169,37 @@ func appendClaudeToolDescription(base string, note string) string {
 	return base + "\n\n" + note
 }
 
+func filterClaudeStaleTeamRecoveryTools(tools []openaiapi.OpenAITool) []openaiapi.OpenAITool {
+	return filterClaudeToolsByName(tools, "Agent", "TeamCreate")
+}
+
+func hasToolByName(tools []openaiapi.OpenAITool, name string) bool {
+	for _, t := range tools {
+		if strings.EqualFold(strings.TrimSpace(t.Function.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterClaudeToolsByName(tools []openaiapi.OpenAITool, blockedNames ...string) []openaiapi.OpenAITool {
+	if len(tools) == 0 || len(blockedNames) == 0 {
+		return tools
+	}
+	blocked := make(map[string]struct{}, len(blockedNames))
+	for _, name := range blockedNames {
+		blocked[strings.TrimSpace(name)] = struct{}{}
+	}
+	filtered := make([]openaiapi.OpenAITool, 0, len(tools))
+	for _, tool := range tools {
+		if _, skip := blocked[strings.TrimSpace(tool.Function.Name)]; skip {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
 func convertClaudeMessages(system claudeContentField, messages []claudeMessage) ([]*schema.Message, error) {
 	result := make([]*schema.Message, 0, len(messages)+1)
 	if systemText, err := claudeContentToText(system.raw); err != nil {
@@ -1126,18 +1261,77 @@ func claudePendingTeamMailboxReminderText(messages []claudeMessage) (string, err
 }
 
 func claudeStaleTeamRetryReminderText(messages []claudeMessage) (string, error) {
-	need, err := needsClaudeStaleTeamRetryReminder(messages)
+	state, err := analyzeClaudeStaleTeamRetryState(messages)
 	if err != nil {
 		return "", err
 	}
-	if !need {
+	if !state.pending() {
 		return "", nil
 	}
-	return claudeStaleTeamRetryReminder, nil
+	return state.reminderText(), nil
 }
 
 func needsClaudeStaleTeamRetryReminder(messages []claudeMessage) (bool, error) {
+	state, err := analyzeClaudeStaleTeamRetryState(messages)
+	if err != nil {
+		return false, err
+	}
+	return state.pending(), nil
+}
+
+func needsClaudeMissingTeamRetryReminder(messages []claudeMessage) (bool, error) {
+	state, err := analyzeClaudeMissingTeamRetryState(messages)
+	if err != nil {
+		return false, err
+	}
+	return state.pending(), nil
+}
+
+func needsClaudeCompletedSimplifyReviewRetryBlock(messages []claudeMessage) (bool, error) {
+	state, err := analyzeClaudeCompletedSimplifyReviewState(messages)
+	if err != nil {
+		return false, err
+	}
+	return state.completed(), nil
+}
+
+type claudeStaleTeamRetryState struct {
+	blockedTeamNames []string
+}
+
+type claudeMissingTeamRetryState struct {
+	blockedTeamNames []string
+}
+
+func (s claudeStaleTeamRetryState) pending() bool {
+	return len(s.blockedTeamNames) > 0
+}
+
+func (s claudeMissingTeamRetryState) pending() bool {
+	return len(s.blockedTeamNames) > 0
+}
+
+func (s claudeStaleTeamRetryState) reminderText() string {
+	if len(s.blockedTeamNames) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("<system-reminder>\n")
+	builder.WriteString("The local team tool reported \"Already leading team\", which means this lead may still own an active team.\n")
+	for _, teamName := range s.blockedTeamNames {
+		builder.WriteString(fmt.Sprintf("Do not call TeamCreate or Agent with team_name %q again in this recovery attempt.\n", teamName))
+	}
+	builder.WriteString("Do not call TeamDelete just to recreate the same team name or re-spawn the same teammate names.\n")
+	builder.WriteString("Prefer reusing the existing team if it is still active; otherwise create a fresh unique team name and fresh reviewer names before spawning again.\n")
+	builder.WriteString("Only use TeamDelete after teammate shutdown is confirmed and no running teammates still need to report results.\n")
+	builder.WriteString("</system-reminder>")
+	return builder.String()
+}
+
+func analyzeClaudeStaleTeamRetryState(messages []claudeMessage) (claudeStaleTeamRetryState, error) {
 	toolNamesByID := make(map[string]string)
+	blockedTeamNames := make([]string, 0, 1)
+	blockedSeen := make(map[string]struct{})
 
 	for _, msg := range messages {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
@@ -1146,7 +1340,7 @@ func needsClaudeStaleTeamRetryReminder(messages []claudeMessage) (bool, error) {
 		}
 		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
 		if err != nil {
-			return false, err
+			return claudeStaleTeamRetryState{}, err
 		}
 		switch role {
 		case "assistant":
@@ -1171,20 +1365,121 @@ func needsClaudeStaleTeamRetryReminder(messages []claudeMessage) (bool, error) {
 				}
 				output, err := claudeContentToText(block.Content)
 				if err != nil {
-					return false, err
+					return claudeStaleTeamRetryState{}, err
 				}
-				if strings.Contains(strings.TrimSpace(output), `Already leading team "`) {
-					return true, nil
+				if teamName := parseClaudeAlreadyLeadingTeamName(output); teamName != "" {
+					if _, ok := blockedSeen[teamName]; ok {
+						continue
+					}
+					blockedSeen[teamName] = struct{}{}
+					blockedTeamNames = append(blockedTeamNames, teamName)
 				}
 			}
 		}
 	}
-	return false, nil
+	return claudeStaleTeamRetryState{blockedTeamNames: blockedTeamNames}, nil
+}
+
+func analyzeClaudeMissingTeamRetryState(messages []claudeMessage) (claudeMissingTeamRetryState, error) {
+	toolNamesByID := make(map[string]string)
+	agentTeamNameByID := make(map[string]string)
+	teamCreateNameByID := make(map[string]string)
+	blockedTeamNames := make([]string, 0, 1)
+	blockedSeen := make(map[string]struct{})
+
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "" {
+			continue
+		}
+		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
+		if err != nil {
+			return claudeMissingTeamRetryState{}, err
+		}
+		switch role {
+		case "assistant":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_use") {
+					continue
+				}
+				toolUseID := strings.TrimSpace(block.ID)
+				if toolUseID == "" {
+					continue
+				}
+				toolName := strings.TrimSpace(block.Name)
+				toolNamesByID[toolUseID] = toolName
+				switch toolName {
+				case "Agent":
+					if teamName, _ := block.Input["team_name"].(string); strings.TrimSpace(teamName) != "" {
+						agentTeamNameByID[toolUseID] = strings.TrimSpace(teamName)
+					}
+				case "TeamCreate":
+					if teamName, _ := block.Input["team_name"].(string); strings.TrimSpace(teamName) != "" {
+						teamCreateNameByID[toolUseID] = strings.TrimSpace(teamName)
+					}
+				}
+			}
+		case "user":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_result") {
+					continue
+				}
+				toolUseID := strings.TrimSpace(block.ToolUseID)
+				toolName := strings.TrimSpace(toolNamesByID[toolUseID])
+				output, err := claudeContentToText(block.Content)
+				if err != nil {
+					return claudeMissingTeamRetryState{}, err
+				}
+				switch toolName {
+				case "Agent":
+					teamName := strings.TrimSpace(agentTeamNameByID[toolUseID])
+					if teamName == "" {
+						continue
+					}
+					if parseClaudeMissingTeamName(output) == teamName {
+						if _, ok := blockedSeen[teamName]; !ok {
+							blockedSeen[teamName] = struct{}{}
+							blockedTeamNames = append(blockedTeamNames, teamName)
+						}
+					}
+				case "TeamCreate":
+					teamName := strings.TrimSpace(teamCreateNameByID[toolUseID])
+					if teamName == "" {
+						continue
+					}
+					if parseClaudeAlreadyLeadingTeamName(output) != "" {
+						continue
+					}
+					if idx := indexOfString(blockedTeamNames, teamName); idx >= 0 {
+						blockedTeamNames = append(blockedTeamNames[:idx], blockedTeamNames[idx+1:]...)
+						delete(blockedSeen, teamName)
+					}
+				}
+			}
+		}
+	}
+	return claudeMissingTeamRetryState{blockedTeamNames: blockedTeamNames}, nil
 }
 
 type claudePendingTeamMailboxState struct {
 	awaitingConcreteResults   bool
 	awaitingShutdownApprovals bool
+}
+
+type claudeCompletedSimplifyReviewState struct {
+	completedReviewerNames map[string]struct{}
+}
+
+func (s claudeCompletedSimplifyReviewState) completed() bool {
+	if len(s.completedReviewerNames) == 0 {
+		return false
+	}
+	for _, name := range claudeSimplifyReviewerNames {
+		if _, ok := s.completedReviewerNames[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s claudePendingTeamMailboxState) pending() bool {
@@ -1294,6 +1589,76 @@ func analyzeClaudePendingTeamMailboxState(messages []claudeMessage) (claudePendi
 		}
 	}
 	return state, nil
+}
+
+func analyzeClaudeCompletedSimplifyReviewState(messages []claudeMessage) (claudeCompletedSimplifyReviewState, error) {
+	agentNameByToolUseID := make(map[string]string)
+	completedReviewerNames := make(map[string]struct{})
+
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "" {
+			continue
+		}
+		blocks, err := parseClaudeContentBlocks(msg.Content.raw)
+		if err != nil {
+			return claudeCompletedSimplifyReviewState{}, err
+		}
+		switch role {
+		case "assistant":
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_use") || !strings.EqualFold(strings.TrimSpace(block.Name), "Agent") {
+					continue
+				}
+				toolUseID := strings.TrimSpace(block.ID)
+				if toolUseID == "" {
+					continue
+				}
+				name, _ := block.Input["name"].(string)
+				name = normalizeClaudeSimplifyReviewerName(name)
+				if name == "" {
+					continue
+				}
+				agentNameByToolUseID[toolUseID] = name
+			}
+		case "user":
+			text, err := claudeBlocksToText(blocks)
+			if err != nil {
+				return claudeCompletedSimplifyReviewState{}, err
+			}
+			for _, mailboxMsg := range extractClaudeTeammateMailboxMessages(text) {
+				name := normalizeClaudeSimplifyReviewerName(mailboxMsg.teammateID)
+				if name == "" {
+					_, eventFrom := parseClaudeTeammateMailboxEvent(mailboxMsg.body)
+					name = normalizeClaudeSimplifyReviewerName(eventFrom)
+				}
+				if name == "" {
+					continue
+				}
+				if claudeMailboxMessageIndicatesCompletedReviewerOutput(mailboxMsg.body) {
+					completedReviewerNames[name] = struct{}{}
+				}
+			}
+			for _, block := range blocks {
+				if !strings.EqualFold(strings.TrimSpace(block.Type), "tool_result") {
+					continue
+				}
+				name := normalizeClaudeSimplifyReviewerName(agentNameByToolUseID[strings.TrimSpace(block.ToolUseID)])
+				if name == "" {
+					continue
+				}
+				output, err := claudeContentToText(block.Content)
+				if err != nil {
+					return claudeCompletedSimplifyReviewState{}, err
+				}
+				if claudeReviewerOutputIndicatesCompleted(output) {
+					completedReviewerNames[name] = struct{}{}
+				}
+			}
+		}
+	}
+
+	return claudeCompletedSimplifyReviewState{completedReviewerNames: completedReviewerNames}, nil
 }
 
 type claudeTeammateMailboxMessage struct {
@@ -1461,6 +1826,100 @@ func parseClaudeShutdownRequestAck(output string) bool {
 	}
 	target, _ := payload["target"].(string)
 	return strings.TrimSpace(target) != ""
+}
+
+func normalizeClaudeSimplifyReviewerName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "reuse-reviewer", "quality-reviewer", "efficiency-reviewer":
+		return name
+	default:
+		return ""
+	}
+}
+
+func claudeToolResultIndicatesCompletedReviewerOutput(output string) bool {
+	return claudeReviewerOutputIndicatesCompleted(output)
+}
+
+func claudeMailboxMessageIndicatesCompletedReviewerOutput(body string) bool {
+	if isClaudeEmptyTeammateMailboxBody(body) {
+		return false
+	}
+	eventType, _ := parseClaudeTeammateMailboxEvent(body)
+	if strings.TrimSpace(eventType) != "" {
+		return false
+	}
+	return claudeReviewerOutputIndicatesCompleted(body)
+}
+
+func claudeReviewerOutputIndicatesCompleted(output string) bool {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return false
+	}
+	if strings.Contains(output, "Spawned successfully.") && strings.Contains(output, "receive instructions via mailbox") {
+		return false
+	}
+	if strings.Contains(output, `Already leading team "`) {
+		return false
+	}
+	if strings.Contains(output, ` does not exist`) {
+		return false
+	}
+	return true
+}
+
+func parseClaudeAlreadyLeadingTeamName(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return ""
+	}
+	const prefix = `Already leading team "`
+	start := strings.Index(output, prefix)
+	if start < 0 {
+		return ""
+	}
+	start += len(prefix)
+	end := strings.Index(output[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(output[start : start+end])
+}
+
+func parseClaudeMissingTeamName(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return ""
+	}
+	const prefix = `Team "`
+	start := strings.Index(output, prefix)
+	if start < 0 {
+		return ""
+	}
+	start += len(prefix)
+	end := strings.Index(output[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	teamName := strings.TrimSpace(output[start : start+end])
+	if teamName == "" {
+		return ""
+	}
+	if !strings.Contains(output, "does not exist") {
+		return ""
+	}
+	return teamName
+}
+
+func indexOfString(items []string, target string) int {
+	for i, item := range items {
+		if item == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseClaudeContentBlocks(raw json.RawMessage) ([]claudeContentBlock, error) {
@@ -1798,3 +2257,56 @@ func writeClaudeError(w http.ResponseWriter, statusCode int, message string) {
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
+
+// stripJSONField removes a top-level field from a JSON object string.
+// Returns the original string if parsing fails or the field is absent.
+func stripJSONField(jsonStr string, field string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return jsonStr
+	}
+	if _, ok := m[field]; !ok {
+		return jsonStr
+	}
+	delete(m, field)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return jsonStr
+	}
+	return string(out)
+}
+
+// #region agent log
+const debugLogPath = "/Users/zhaowu/go/src/github.com/LubyRuffy/gptb2o/.cursor/debug-133afd.log"
+
+func debugLogNDJSON(location, message string, data map[string]any, hypothesisID string) {
+	entry := map[string]any{
+		"sessionId":    "133afd",
+		"timestamp":    time.Now().UnixMilli(),
+		"location":     location,
+		"message":      message,
+		"data":         data,
+		"hypothesisId": hypothesisID,
+	}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+func hasClaudeToolByName(tools []claudeTool, name string) bool {
+	for _, t := range tools {
+		if strings.EqualFold(strings.TrimSpace(t.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// #endregion

@@ -24,6 +24,7 @@
   单条 trace event 保存的最大 body 字节数
 - `--show-interaction`
   打印指定 `interaction_id` 的完整链路并退出；未显式传 `--trace-db-path` 时使用默认 trace 库
+  回放顶部会优先打印 `error_summary` 与 `recovery_summary`，便于快速判断是 stream 内部错误、`missing-team`、`stale-team` 还是 reviewer 重试问题
 
 ### 示例
 

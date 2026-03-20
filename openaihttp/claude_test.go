@@ -1625,11 +1625,20 @@ func TestClaudeMessages_NonStream_AddsStaleTeamRetryReminder(t *testing.T) {
 				generateResp: schema.AssistantMessage("Use a new unique team name.", nil),
 				generateHook: func(input []*schema.Message) {
 					require.NotEmpty(t, input)
-					last := input[len(input)-1]
-					require.Equal(t, schema.User, last.Role)
-					require.Contains(t, last.Content, "Already leading team")
-					require.Contains(t, last.Content, "Do not call TeamDelete just to recreate the same team name")
-					require.Contains(t, last.Content, "Prefer reusing the existing team")
+					var sawSpecific, sawBlocked bool
+					for _, msg := range input {
+						if msg.Role != schema.User {
+							continue
+						}
+						if strings.Contains(msg.Content, `Do not call TeamCreate or Agent with team_name "simplify-5fd0f37" again in this recovery attempt.`) {
+							sawSpecific = true
+						}
+						if strings.Contains(msg.Content, "Automatic team recovery is blocked") {
+							sawBlocked = true
+						}
+					}
+					require.True(t, sawSpecific)
+					require.True(t, sawBlocked)
 				},
 			}, nil
 		},
@@ -1652,6 +1661,569 @@ func TestClaudeMessages_NonStream_AddsStaleTeamRetryReminder(t *testing.T) {
 
 	h.handleMessages(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestClaudeMessages_NonStream_StaleTeamState_BlocksAgentAndTeamCreateTools(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			var toolNames []string
+			for _, tool := range tools {
+				toolNames = append(toolNames, tool.Function.Name)
+			}
+			require.NotContains(t, toolNames, "Agent")
+			require.NotContains(t, toolNames, "TeamCreate")
+			require.Contains(t, toolNames, "Read")
+
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("stale team blocked", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "Automatic team recovery is blocked")
+					require.Contains(t, last.Content, "Do not attempt any more TeamCreate or Agent teammate spawns")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "tools":[
+    {"name":"Agent","description":"Launch agent","input_schema":{"type":"object"}},
+    {"name":"TeamCreate","description":"Create team","input_schema":{"type":"object"}},
+    {"name":"Read","description":"Read file","input_schema":{"type":"object"}}
+  ],
+  "messages":[
+    {"role":"assistant","content":[{"type":"tool_use","id":"team_create_1","name":"TeamCreate","input":{"team_name":"simplify-review","description":"review commit"}}]},
+    {"role":"user","content":[{"type":"tool_result","tool_use_id":"team_create_1","content":"Already leading team \"simplify-review\". A leader can only manage one team at a time. Use TeamDelete to end the current team before creating a new one."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "stale team blocked", resp.Content[0].Text)
+}
+
+func TestNeedsClaudeMissingTeamRetryReminder_TrueAfterTeamScopedAgentFailsWithoutTeam(t *testing.T) {
+	messages := []claudeMessage{
+		{
+			Role: "assistant",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_use","id":"agent_1","name":"Agent","input":{"name":"reuse-reviewer","team_name":"simplify-review","prompt":"review","description":"review"}}
+			]`)},
+		},
+		{
+			Role: "user",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_result","tool_use_id":"agent_1","content":"Team \"simplify-review\" does not exist. Call spawnTeam first to create the team."}
+			]`)},
+		},
+	}
+
+	blocked, err := needsClaudeMissingTeamRetryReminder(messages)
+	require.NoError(t, err)
+	require.True(t, blocked)
+}
+
+func TestNeedsClaudeMissingTeamRetryReminder_FalseAfterSuccessfulTeamCreate(t *testing.T) {
+	messages := []claudeMessage{
+		{
+			Role: "assistant",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_use","id":"agent_1","name":"Agent","input":{"name":"reuse-reviewer","team_name":"simplify-review","prompt":"review","description":"review"}},
+				{"type":"tool_use","id":"team_create_1","name":"TeamCreate","input":{"team_name":"simplify-review","description":"review commit"}}
+			]`)},
+		},
+		{
+			Role: "user",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_result","tool_use_id":"agent_1","content":"Team \"simplify-review\" does not exist. Call spawnTeam first to create the team."},
+				{"type":"tool_result","tool_use_id":"team_create_1","content":"Spawned team \"simplify-review\" successfully."}
+			]`)},
+		},
+	}
+
+	blocked, err := needsClaudeMissingTeamRetryReminder(messages)
+	require.NoError(t, err)
+	require.False(t, blocked)
+}
+
+func TestClaudeMessages_NonStream_MissingTeamState_KeepsAgentAndInjectsReminder(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			var toolNames []string
+			for _, tool := range tools {
+				toolNames = append(toolNames, tool.Function.Name)
+			}
+			require.Contains(t, toolNames, "Agent", "Agent should be kept for missing-team scenario")
+			require.Contains(t, toolNames, "TeamCreate")
+			require.Contains(t, toolNames, "Read")
+
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("will retry without team_name", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "team_name parameter has")
+					require.Contains(t, last.Content, "Do not skip the agent-spawning phase")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "tools":[
+    {"name":"Agent","description":"Launch agent","input_schema":{"type":"object"}},
+    {"name":"TeamCreate","description":"Create team","input_schema":{"type":"object"}},
+    {"name":"Read","description":"Read file","input_schema":{"type":"object"}}
+  ],
+  "messages":[
+    {"role":"assistant","content":[{"type":"tool_use","id":"agent_1","name":"Agent","input":{"name":"reuse-reviewer","team_name":"simplify-review","prompt":"review","description":"review"}}]},
+    {"role":"user","content":[{"type":"tool_result","tool_use_id":"agent_1","content":"Team \"simplify-review\" does not exist. Call spawnTeam first to create the team."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "will retry without team_name", resp.Content[0].Text)
+}
+
+func TestConvertClaudeTools_StripsTeamNameFromAgentWhenNoTeamCreate(t *testing.T) {
+	tools := []claudeTool{
+		{
+			Name:        "Agent",
+			Description: "Launch agent",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":        map[string]any{"type": "string"},
+					"team_name":   map[string]any{"type": "string", "description": "Team name for spawning"},
+					"prompt":      map[string]any{"type": "string"},
+					"description": map[string]any{"type": "string"},
+				},
+				"required": []any{"name", "prompt"},
+			},
+		},
+		{
+			Name:        "Bash",
+			Description: "Run bash",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
+		},
+	}
+
+	result, err := convertClaudeTools(tools)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+
+	agentTool := result[0]
+	require.Equal(t, "Agent", agentTool.Function.Name)
+	params := agentTool.Function.Parameters
+	props, ok := params["properties"].(map[string]any)
+	require.True(t, ok)
+	_, hasTeamName := props["team_name"]
+	require.False(t, hasTeamName, "team_name should be stripped when TeamCreate is absent")
+	_, hasName := props["name"]
+	require.True(t, hasName, "name property should be preserved")
+	_, hasPrompt := props["prompt"]
+	require.True(t, hasPrompt, "prompt property should be preserved")
+}
+
+func TestConvertClaudeTools_StripsTeamNameEvenWhenTeamCreatePresent(t *testing.T) {
+	tools := []claudeTool{
+		{
+			Name:        "Agent",
+			Description: "Launch agent",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":      map[string]any{"type": "string"},
+					"team_name": map[string]any{"type": "string"},
+					"prompt":    map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			Name:        "TeamCreate",
+			Description: "Create team",
+			InputSchema: map[string]any{"type": "object"},
+		},
+	}
+
+	result, err := convertClaudeTools(tools)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+
+	agentTool := result[0]
+	params := agentTool.Function.Parameters
+	props, ok := params["properties"].(map[string]any)
+	require.True(t, ok)
+	_, hasTeamName := props["team_name"]
+	require.False(t, hasTeamName, "team_name should always be stripped from Agent for GPT backends")
+}
+
+func TestStripJSONField(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		field    string
+		expected string
+	}{
+		{
+			name:  "removes team_name from Agent args",
+			input: `{"name":"reuse-reviewer","team_name":"simplify-review","prompt":"review code"}`,
+			field: "team_name",
+		},
+		{
+			name:     "no-op when field absent",
+			input:    `{"name":"reuse-reviewer","prompt":"review code"}`,
+			field:    "team_name",
+			expected: `{"name":"reuse-reviewer","prompt":"review code"}`,
+		},
+		{
+			name:     "no-op on invalid JSON",
+			input:    `not json`,
+			field:    "team_name",
+			expected: `not json`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripJSONField(tt.input, tt.field)
+			if tt.expected != "" {
+				require.Equal(t, tt.expected, result)
+			} else {
+				require.NotContains(t, result, "team_name")
+				require.Contains(t, result, "reuse-reviewer")
+			}
+		})
+	}
+}
+
+func TestStripAgentTeamNameProperty(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string"},
+			"team_name": map[string]any{"type": "string"},
+			"prompt":    map[string]any{"type": "string"},
+		},
+		"required": []any{"name", "team_name", "prompt"},
+	}
+
+	result := stripAgentTeamNameProperty(schema)
+
+	props := result["properties"].(map[string]any)
+	_, hasTeamName := props["team_name"]
+	require.False(t, hasTeamName, "team_name should be removed from properties")
+
+	req := result["required"].([]any)
+	for _, r := range req {
+		require.NotEqual(t, "team_name", r, "team_name should be removed from required")
+	}
+	require.Len(t, req, 2)
+}
+
+func TestNeedsClaudeCompletedSimplifyReviewRetryBlock_TrueAfterThreeReviewersComplete(t *testing.T) {
+	messages := []claudeMessage{
+		{
+			Role: "assistant",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_use","id":"reuse_1","name":"Agent","input":{"name":"reuse-reviewer","prompt":"review","description":"review"}},
+				{"type":"tool_use","id":"quality_1","name":"Agent","input":{"name":"quality-reviewer","prompt":"review","description":"review"}},
+				{"type":"tool_use","id":"efficiency_1","name":"Agent","input":{"name":"efficiency-reviewer","prompt":"review","description":"review"}}
+			]`)},
+		},
+		{
+			Role: "user",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `[
+				{"type":"tool_result","tool_use_id":"reuse_1","content":"Done. No actionable reuse findings."},
+				{"type":"tool_result","tool_use_id":"quality_1","content":"Done. No actionable quality findings."},
+				{"type":"tool_result","tool_use_id":"efficiency_1","content":"Done. No actionable efficiency findings."}
+			]`)},
+		},
+	}
+
+	blocked, err := needsClaudeCompletedSimplifyReviewRetryBlock(messages)
+	require.NoError(t, err)
+	require.True(t, blocked)
+}
+
+func TestNeedsClaudeCompletedSimplifyReviewRetryBlock_TrueAfterThreeReviewerMailboxMessages(t *testing.T) {
+	messages := []claudeMessage{
+		{
+			Role:    "user",
+			Content: claudeContentField{raw: mustRawJSONLiteral(t, `"<teammate-message teammate_id=\"reuse-reviewer\" color=\"red\">\nI found no reuse opportunities in this diff.\n</teammate-message>\n\n<teammate-message teammate_id=\"quality-reviewer\" color=\"green\">\nReviewed the diff. No code-quality issues from the requested categories.\n</teammate-message>\n\n<teammate-message teammate_id=\"efficiency-reviewer\" color=\"yellow\">\nNo efficiency issues found in this diff.\n</teammate-message>\n\n<teammate-message teammate_id=\"quality-reviewer\" color=\"green\">\n{\"type\":\"idle_notification\",\"from\":\"quality-reviewer\",\"timestamp\":\"2026-03-19T23:35:16.020Z\"}\n</teammate-message>"`)},
+		},
+	}
+
+	blocked, err := needsClaudeCompletedSimplifyReviewRetryBlock(messages)
+	require.NoError(t, err)
+	require.True(t, blocked)
+}
+
+func TestClaudeMessages_NonStream_CompletedSimplifyReview_BlocksFurtherAgentAndTeamCreate(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			var toolNames []string
+			for _, tool := range tools {
+				toolNames = append(toolNames, tool.Function.Name)
+			}
+			require.NotContains(t, toolNames, "Agent")
+			require.NotContains(t, toolNames, "TeamCreate")
+			require.Contains(t, toolNames, "Read")
+
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("aggregate existing reviewer output", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "The simplify reviewers already completed one full review cycle")
+					require.Contains(t, last.Content, "Do not spawn reuse-reviewer, quality-reviewer, or efficiency-reviewer again")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "tools":[
+    {"name":"Agent","description":"Launch agent","input_schema":{"type":"object"}},
+    {"name":"TeamCreate","description":"Create team","input_schema":{"type":"object"}},
+    {"name":"Read","description":"Read file","input_schema":{"type":"object"}}
+  ],
+  "messages":[
+    {"role":"assistant","content":[
+      {"type":"tool_use","id":"reuse_1","name":"Agent","input":{"name":"reuse-reviewer","prompt":"review","description":"review"}},
+      {"type":"tool_use","id":"quality_1","name":"Agent","input":{"name":"quality-reviewer","prompt":"review","description":"review"}},
+      {"type":"tool_use","id":"efficiency_1","name":"Agent","input":{"name":"efficiency-reviewer","prompt":"review","description":"review"}}
+    ]},
+    {"role":"user","content":[
+      {"type":"tool_result","tool_use_id":"reuse_1","content":"Done. No actionable reuse findings."},
+      {"type":"tool_result","tool_use_id":"quality_1","content":"Done. No actionable quality findings."},
+      {"type":"tool_result","tool_use_id":"efficiency_1","content":"Done. No actionable efficiency findings."}
+    ]},
+    {"role":"assistant","content":[{"type":"text","text":"The review agents need a teamless launch here. Retrying the parallel review now."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "aggregate existing reviewer output", resp.Content[0].Text)
+}
+
+func TestClaudeMessages_NonStream_CompletedSimplifyReviewMailbox_BlocksFurtherAgentAndTeamCreate(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			var toolNames []string
+			for _, tool := range tools {
+				toolNames = append(toolNames, tool.Function.Name)
+			}
+			require.NotContains(t, toolNames, "Agent")
+			require.NotContains(t, toolNames, "TeamCreate")
+			require.Contains(t, toolNames, "Read")
+
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("aggregate reviewer mailbox output", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					last := input[len(input)-1]
+					require.Equal(t, schema.User, last.Role)
+					require.Contains(t, last.Content, "The simplify reviewers already completed one full review cycle")
+					require.Contains(t, last.Content, "Do not spawn reuse-reviewer, quality-reviewer, or efficiency-reviewer again")
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "tools":[
+    {"name":"Agent","description":"Launch agent","input_schema":{"type":"object"}},
+    {"name":"TeamCreate","description":"Create team","input_schema":{"type":"object"}},
+    {"name":"Read","description":"Read file","input_schema":{"type":"object"}}
+  ],
+  "messages":[
+    {"role":"user","content":"<teammate-message teammate_id=\"reuse-reviewer\" color=\"red\">\nI found no reuse opportunities in this diff.\n</teammate-message>\n\n<teammate-message teammate_id=\"quality-reviewer\" color=\"green\">\nReviewed the diff. No code-quality issues from the requested categories.\n</teammate-message>\n\n<teammate-message teammate_id=\"efficiency-reviewer\" color=\"yellow\">\nNo efficiency issues found in this diff.\n</teammate-message>\n\n<teammate-message teammate_id=\"reuse-reviewer\" color=\"red\">\n{\"type\":\"shutdown_approved\",\"from\":\"reuse-reviewer\",\"requestId\":\"shutdown-1\"}\n</teammate-message>"},
+    {"role":"assistant","content":[{"type":"text","text":"The review agents need a teamless launch here. Retrying the parallel review now."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "aggregate reviewer mailbox output", resp.Content[0].Text)
+}
+
+func TestClaudeMessages_NonStream_StaleTeamRetryReminder_DoesNotAllowFurtherTeamSpawn(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				generateResp: schema.AssistantMessage("stale team blocked", nil),
+				generateHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					var sawSpecific, sawBlocked bool
+					for _, msg := range input {
+						if msg.Role != schema.User {
+							continue
+						}
+						if strings.Contains(msg.Content, `Do not call TeamCreate or Agent with team_name "simplify-5fd0f37" again in this recovery attempt.`) {
+							sawSpecific = true
+						}
+						if strings.Contains(msg.Content, "Automatic team recovery is blocked") {
+							sawBlocked = true
+						}
+					}
+					require.True(t, sawSpecific)
+					require.True(t, sawBlocked)
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":false,
+  "max_tokens":1024,
+  "messages":[
+    {"role":"assistant","content":[{"type":"tool_use","id":"team_create_1","name":"TeamCreate","input":{"team_name":"simplify-5fd0f37","description":"review commit"}}]},
+    {"role":"user","content":[{"type":"tool_result","tool_use_id":"team_create_1","content":"Already leading team \"simplify-5fd0f37\". A leader can only manage one team at a time. Use TeamDelete to end the current team before creating a new one."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp claudeMessageResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StopReason)
+	require.Equal(t, "end_turn", *resp.StopReason)
+	require.Len(t, resp.Content, 1)
+	require.Equal(t, "text", resp.Content[0].Type)
+	require.Equal(t, "stale team blocked", resp.Content[0].Text)
+}
+
+func TestClaudeMessages_Stream_StaleTeamRetryReminder_DoesNotAllowFurtherTeamSpawn(t *testing.T) {
+	h, err := newClaudeCompatHandler(claudeCompatConfig{
+		Now: time.Now,
+		NewChatModel: func(ctx context.Context, modelID string, tools []openaiapi.OpenAITool, toolCallHandler func(*backend.ToolCall)) (chatModel, error) {
+			return &stubChatModel{
+				streamMsgs: []*schema.Message{{Content: "stale team blocked"}},
+				streamHook: func(input []*schema.Message) {
+					require.NotEmpty(t, input)
+					var sawSpecific, sawBlocked bool
+					for _, msg := range input {
+						if msg.Role != schema.User {
+							continue
+						}
+						if strings.Contains(msg.Content, `Do not call TeamCreate or Agent with team_name "simplify-5fd0f37" again in this recovery attempt.`) {
+							sawSpecific = true
+						}
+						if strings.Contains(msg.Content, "Automatic team recovery is blocked") {
+							sawBlocked = true
+						}
+					}
+					require.True(t, sawSpecific)
+					require.True(t, sawBlocked)
+				},
+			}, nil
+		},
+		WriteJSON:  writeJSON,
+		WriteError: writeClaudeError,
+	})
+	require.NoError(t, err)
+
+	body := []byte(`{
+  "model":"gpt-5.1",
+  "stream":true,
+  "max_tokens":1024,
+  "messages":[
+    {"role":"assistant","content":[{"type":"tool_use","id":"team_create_1","name":"TeamCreate","input":{"team_name":"simplify-5fd0f37","description":"review commit"}}]},
+    {"role":"user","content":[{"type":"tool_result","tool_use_id":"team_create_1","content":"Already leading team \"simplify-5fd0f37\". A leader can only manage one team at a time. Use TeamDelete to end the current team before creating a new one."}]}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.handleMessages(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	events := parseClaudeSSEEvents(t, w.Body.String())
+	var sawBlockedText bool
+	for _, ev := range events {
+		if ev.Name != "content_block_delta" {
+			continue
+		}
+		delta, _ := ev.Data["delta"].(map[string]any)
+		if strings.Contains(stringValue(delta["text"]), "stale team blocked") {
+			sawBlockedText = true
+		}
+	}
+	require.True(t, sawBlockedText)
 }
 
 func TestConvertClaudeTools_RewritesAgentTaskLifecycleDescriptions(t *testing.T) {

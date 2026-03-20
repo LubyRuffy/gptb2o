@@ -27,6 +27,7 @@
 - 对 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 描述补充 GPT backend 语义提示，避免把 `agentId` 误当成 `task_id`，降低把 `Agent.resume` 误作 teammate 输出轮询的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；若本地 team 已落入 `Already leading team` 脏状态，也会明确提示不要在未确认 teammate 已 shutdown 时先 `TeamDelete` 再同名重建，而应优先复用现有 team 或切换新 team 名
 - 对 agent teams pending mailbox 做差集判断：只有所有已 spawn teammate 都收到 concrete mailbox result 后，才解除等待；控制消息不会被误判成任务完成
 - 对 shutdown 阶段继续做差集判断：只有所有已发送 `shutdown_request` 的 teammate 都回 `shutdown_approved` 后，才允许 cleanup
+- 对 `/simplify` reviewer 完成态同时识别旧 `Agent -> tool_result` 结果和主线程回灌的 teammate mailbox 文本结果，避免正常 reviewer 已经通过 `SendMessage` 回传、但父线程仍被误判为“未完成”而重复拉起 reviewer
 
 ### `backend`
 

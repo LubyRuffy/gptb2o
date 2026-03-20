@@ -68,7 +68,7 @@ go run ./cmd/gptb2o-server --auth-source codex
 go run ./cmd/gptb2o-server --show-interaction ia_example
 ```
 
-如果是流式请求，先看回放顶部的 `error_summary`：
+如果是流式请求，先看回放顶部的 `error_summary`；如果是 Claude `/v1/messages` teammate / team 恢复问题，再看 `recovery_summary`：
 - 为空通常表示这轮正常收束
 - 若出现如 `api_error: ...`，说明虽然客户端可能拿到了 `200`，但 stream 内部已经发过 `event: error`
 

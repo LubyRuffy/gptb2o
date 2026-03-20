@@ -69,3 +69,8 @@ func TestToolCallArgumentsForStream_AgentRequiresCoreFields(t *testing.T) {
 func TestNormalizeJSONArgumentString_NonJSONKeepsTrimmed(t *testing.T) {
 	require.Equal(t, "not-json", normalizeJSONArgumentString("  not-json  "))
 }
+
+func TestNormalizeJSONArgumentString_PreservesEmptyStringFields(t *testing.T) {
+	got := normalizeJSONArgumentString(`{"file_path":"/tmp/a.md","limit":80,"offset":1,"pages":"","note":"  "}`)
+	require.JSONEq(t, `{"file_path":"/tmp/a.md","limit":80,"offset":1,"pages":"","note":"  "}`, got)
+}

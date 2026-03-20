@@ -49,8 +49,8 @@
 | Area | Status | Notes |
 | --- | --- | --- |
 | `Task` | Supported | 兼容旧 teammate 工具协议 |
-| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示；若遇到 `Already leading team`，会明确提示不要重复 `TeamCreate`，也不要为了复用同名 team 立即 `TeamDelete`，而应优先复用现有 team 或改用新的唯一 team 名 |
-| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup”；`TeamCreate` 遇到 `Already leading team` 时，会提示不要在同一 lead 上循环重试，也不要在未确认 teammate 已 shutdown 时立刻 `TeamDelete` 后同名重建 |
+| `Agent` | Supported | 支持 Claude Code 新协议常见路径，并补充 `agentId != task_id`、`Agent.resume` 不是 teammate 输出轮询接口、不要在 unread mailbox 结果到达前结束当前 turn 的语义提示；若遇到 `Already leading team`，会明确提示不要重复 `TeamCreate`，也不要为了复用同名 team 立即 `TeamDelete`，并会把出错的 `team_name` 明确列为本次恢复路径内禁止再次用于 `Agent` / `TeamCreate`；当工具列表中不含 `TeamCreate` 时（如 `/simplify` 场景），自动从 Agent tool schema 中移除 `team_name` 属性，并在响应中剥离 GPT 可能 hallucinate 的 `team_name` 参数，从源头阻止 Claude Code 进入 team 路由；若仍出现 "Team does not exist" 错误，会注入 system-reminder 引导模型正常使用 Agent；若 `/simplify` 的 `reuse-reviewer` / `quality-reviewer` / `efficiency-reviewer` 已在当前会话分支通过 teammate mailbox 完成一整轮评审，兼容层会阻止继续重复 spawn reviewer |
+| `TeamCreate` / `SendMessage` | Supported | 已补 team mailbox 语义提示，帮助 backend 正确理解 team 创建、结果回传、协调消息以及“先收结果再 shutdown/cleanup”；`TeamCreate` 遇到 `Already leading team` 时，会提示不要在同一 lead 上循环重试，也不要在未确认 teammate 已 shutdown 时立刻 `TeamDelete` 后同名重建，而应切换到新的唯一 `team_name`；若先前 team-scoped `Agent` 因 team 不存在而失败，兼容层会保留 `TeamCreate` 作为唯一自动恢复入口；若 `/simplify` reviewer 已完成一轮，则兼容层会直接禁用后续 `TeamCreate` 重试 |
 | `TaskOutput` / `TaskStop` | Partially supported | 已做协议透传，并补充 `task_id` 只接受真实 task id 的语义提示 |
 | new/old teammate protocol coexistence | Supported | 文档与测试均以双协议兼容为目标 |
 | real Claude CLI teammate round-trip | Supported with tests | 仓库内已有真实 CLI 集成测试 |
@@ -74,6 +74,7 @@
 - 若 team lead 已完成 teammate spawn、但 concrete mailbox 结果尚未回流，兼容层会把空响应 turn 归一成 `pause_turn`，避免把“等待 mailbox”误报成 `end_turn`
 - 即使 lead 在等待 teammate mailbox 时已经输出了 `Still waiting...` 等中间态文本，只要未读 mailbox 结果仍存在，兼容层也会继续保持 `pause_turn`
 - pending mailbox 判断按“已 spawn teammate 与已收到 concrete mailbox result 的差集”执行；控制消息如 `idle_notification` / `shutdown_approved` 不会误解除 pending
+- `/simplify` reviewer 的“已完成一轮评审”判断既看旧的 `Agent -> tool_result` 路径，也看主线程后续回灌的 `<teammate-message teammate_id="...">...</teammate-message>` reviewer 结果，避免因协议漂移误判 reviewer 尚未完成
 - 若 team lead 已发送 `shutdown_request`、但 `shutdown_approved` 尚未齐全，兼容层同样会保持 `pause_turn`，避免把“等待 shutdown approvals”误报成 `end_turn`
 
 ## Verification sources

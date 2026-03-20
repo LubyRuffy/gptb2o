@@ -1,10 +1,12 @@
 package trace
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +151,9 @@ func FormatInteractionReport(interaction Interaction, events []InteractionEvent)
 	if interaction.ErrorSummary != "" {
 		builder.WriteString("error_summary: " + interaction.ErrorSummary + "\n")
 	}
+	if recoverySummary := summarizeClaudeRecovery(interaction, events); recoverySummary != "" {
+		builder.WriteString("recovery_summary: " + recoverySummary + "\n")
+	}
 	if !interaction.StartedAt.IsZero() {
 		builder.WriteString("started_at: " + interaction.StartedAt.Format(time.RFC3339Nano) + "\n")
 	}
@@ -187,4 +192,134 @@ func FormatInteractionReport(interaction Interaction, events []InteractionEvent)
 		}
 	}
 	return builder.String()
+}
+
+var (
+	missingTeamPattern  = regexp.MustCompile(`Team "([^"]+)" does not exist\. Call spawnTeam first to create the team\.`)
+	staleTeamPattern    = regexp.MustCompile(`Already leading team "([^"]+)"\.`)
+	simplifyReviewNames = []string{"reuse-reviewer", "quality-reviewer", "efficiency-reviewer"}
+)
+
+func summarizeClaudeRecovery(interaction Interaction, events []InteractionEvent) string {
+	if interaction.ClientAPI != "claude" || interaction.Path != "/v1/messages" {
+		return ""
+	}
+
+	parts := make([]string, 0, 3)
+	seen := make(map[string]struct{})
+	reviewerCounts := make(map[string]int, len(simplifyReviewNames))
+
+	for _, event := range events {
+		body := normalizeTraceBodyForRecoverySummary(event.Body)
+		if body == "" {
+			continue
+		}
+		for _, match := range missingTeamPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			part := "missing-team:" + strings.TrimSpace(match[1])
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			parts = append(parts, part)
+		}
+		for _, match := range staleTeamPattern.FindAllStringSubmatch(body, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			part := "stale-team:" + strings.TrimSpace(match[1])
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			parts = append(parts, part)
+		}
+		addSimplifyReviewerProtocolCounts(reviewerCounts, body)
+	}
+
+	if allSimplifyReviewersRetried(reviewerCounts) {
+		const part = "duplicate-simplify-reviewer-retry"
+		if _, ok := seen[part]; !ok {
+			parts = append(parts, part)
+		}
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+func normalizeTraceBodyForRecoverySummary(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	body = strings.ReplaceAll(body, `\"`, `"`)
+	body = strings.ReplaceAll(body, `\n`, "\n")
+	return body
+}
+
+func allSimplifyReviewersRetried(counts map[string]int) bool {
+	if len(counts) == 0 {
+		return false
+	}
+	for _, reviewer := range simplifyReviewNames {
+		if counts[reviewer] < 2 {
+			return false
+		}
+	}
+	return true
+}
+
+func addSimplifyReviewerProtocolCounts(counts map[string]int, body string) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return
+	}
+
+	var payload struct {
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return
+	}
+
+	for _, msg := range payload.Messages {
+		trimmed := strings.TrimSpace(string(msg.Content))
+		if trimmed == "" || trimmed == "null" || trimmed[0] != '[' {
+			continue
+		}
+
+		var blocks []struct {
+			Type  string         `json:"type"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		}
+		if err := json.Unmarshal(msg.Content, &blocks); err != nil {
+			continue
+		}
+
+		for _, block := range blocks {
+			if strings.TrimSpace(block.Type) != "tool_use" || strings.TrimSpace(block.Name) != "Agent" {
+				continue
+			}
+			name, _ := block.Input["name"].(string)
+			if name = normalizeTraceSimplifyReviewerName(name); name == "" {
+				continue
+			}
+			counts[name]++
+		}
+	}
+}
+
+func normalizeTraceSimplifyReviewerName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "reuse-reviewer", "quality-reviewer", "efficiency-reviewer":
+		return name
+	default:
+		return ""
+	}
 }

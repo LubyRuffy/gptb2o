@@ -52,6 +52,17 @@
 
 <!-- LEARNING_LOG_START -->
 
+## 20260320-134500 经验教训：GPT 自行添加 team_name 触发 Claude Code team 路由，致 /simplify teammate 永远空闲
+
+- 现象：Claude Code 2.1.80 运行 `/simplify` 后，3 个 reviewer teammate 进程已启动（显示 "gpt-5.4 · API Usage Billing"），但一直处于 0 tool uses · 0 tokens 的 idle 状态。trace 中仅有 lead 的请求，无任何 teammate 请求。
+- 根因链条（分三层）：
+  1. Agent tool schema 包含 `team_name` 参数（描述 "Uses current team context if omitted"），GPT 后端看到此参数后自作主张填入 `team_name: "simplify-review"`，但 `/simplify` prompt 并未要求使用 team_name，且 `TeamCreate` 不在工具列表中。
+  2. Claude Code 收到带 `team_name` 的 Agent 调用后进入 team 路由，但 team 从未注册（无 TeamCreate 调用），返回 "Team does not exist"。
+  3. Claude Code 一旦记住 team context，即使后续 Agent 调用不带 `team_name`（通过 system-reminder 引导），Claude Code 仍自动关联到 "simplify-review" team 并继续失败。
+- 之前的修复（仅移除 Agent 工具/仅 system-reminder）无效的原因：仅 system-reminder 引导"不带 team_name 重试"无法解决问题，因为 Claude Code 的 Agent handler 在 `team_name` 省略时会使用"当前 team context"（已被首轮错误调用污染）。
+- 最终处置：从源头阻止 team_name 出现——当工具列表中不含 `TeamCreate` 时，自动从 Agent tool schema 的 properties 和 required 中移除 `team_name`；同时在流式和非流式响应路径中，剥离 GPT 可能 hallucinate 的 `team_name` 参数。
+- 预防：以后遇到 GPT 后端自行填充 Claude Code 本地工具的可选参数、从而触发非预期分支的问题，必须在 schema 层面移除不适用的参数，而不是仅靠 system-reminder 去引导模型"不要填"——模型指令跟随不可靠，尤其是在 function calling schema 层面。
+
 ## 20260319-221800 经验教训：`Already leading team` 不能再默认引导先 `TeamDelete` 后同名重建
 
 - 现象：Claude Code 2.1.79 在 `/simplify` review team 场景里，team-scoped `Agent` 先因 `Team "... does not exist"` 失败，随后 `TeamCreate` 返回 `Already leading team`；模型按提示执行 `TeamDelete` 后，又用同一个 `team_name` 和同名 reviewer 重新 spawn，结果旧 teammate pane 仍在运行，新旧同名实例并存。

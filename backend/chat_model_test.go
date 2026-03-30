@@ -21,7 +21,7 @@ func TestReadBackendSSE_DeltaAndDone(t *testing.T) {
 		"data: [DONE]\n\n")
 
 	var deltas []string
-	content, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error {
+	content, toolCalls, usage, err := readBackendSSE(context.Background(), body, func(delta string) error {
 		deltas = append(deltas, delta)
 		return nil
 	}, nil)
@@ -29,6 +29,7 @@ func TestReadBackendSSE_DeltaAndDone(t *testing.T) {
 	require.Equal(t, []string{"hel", "lo"}, deltas)
 	require.Equal(t, "hello", content)
 	require.Empty(t, toolCalls)
+	require.Nil(t, usage)
 }
 
 func newTestChatModel(instructions string) *ChatModel {
@@ -417,7 +418,7 @@ func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, usage, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -427,6 +428,7 @@ func TestReadBackendSSE_ToolCallFromWebSearchEvent(t *testing.T) {
 	require.Equal(t, "in_progress", calls[0].Status)
 	// web_search 是 native 工具，不应出现在返回的函数调用列表中
 	require.Empty(t, toolCalls)
+	require.Nil(t, usage)
 }
 
 func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.T) {
@@ -438,7 +440,7 @@ func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, usage, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -469,6 +471,7 @@ func TestReadBackendSSE_FunctionCallArgumentsDoneUsesAccumulatedArgs(t *testing.
 	var retArgs map[string]any
 	require.NoError(t, json.Unmarshal([]byte(toolCalls[0].Arguments), &retArgs))
 	require.Equal(t, "desc", retArgs["description"])
+	require.Nil(t, usage)
 }
 
 func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing.T) {
@@ -478,7 +481,7 @@ func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing
 		"data: [DONE]\n\n")
 
 	var calls []*ToolCall
-	_, toolCalls, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
+	_, toolCalls, usage, err := readBackendSSE(context.Background(), body, func(delta string) error { return nil }, func(call *ToolCall) {
 		calls = append(calls, call)
 	})
 	require.NoError(t, err)
@@ -505,6 +508,43 @@ func TestReadBackendSSE_ResponseCompletedCarriesFunctionCallArguments(t *testing
 	require.Len(t, toolCalls, 1)
 	require.Equal(t, "call_2", toolCalls[0].ID)
 	require.Equal(t, "Task", toolCalls[0].Name)
+	require.Nil(t, usage)
+}
+
+func TestGenerate_ResponseCompletedUsageMappedToResponseMeta(t *testing.T) {
+	backendSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			`data: {"type":"response.output_text.delta","delta":"统计"}`,
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":123,"output_tokens":45,"total_tokens":168}}}`,
+			`data: [DONE]`,
+		}
+		for _, e := range events {
+			fmt.Fprintln(w, e)
+			fmt.Fprintln(w)
+		}
+	}))
+	defer backendSrv.Close()
+
+	m, err := NewChatModel(ChatModelConfig{
+		Model:       "gpt-5.4",
+		BackendURL:  backendSrv.URL,
+		AccessToken: "token",
+		HTTPClient:  backendSrv.Client(),
+		Originator:  "test",
+	})
+	require.NoError(t, err)
+
+	msg, err := m.Generate(context.Background(), []*schema.Message{
+		{Role: schema.User, Content: "给我 token 统计"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "统计", msg.Content)
+	require.NotNil(t, msg.ResponseMeta)
+	require.NotNil(t, msg.ResponseMeta.Usage)
+	require.Equal(t, 123, msg.ResponseMeta.Usage.PromptTokens)
+	require.Equal(t, 45, msg.ResponseMeta.Usage.CompletionTokens)
+	require.Equal(t, 168, msg.ResponseMeta.Usage.TotalTokens)
 }
 
 func TestGenerate_ReturnsFunctionCallToolCalls(t *testing.T) {
@@ -556,6 +596,7 @@ func TestStream_EmitsFunctionCallToolCalls(t *testing.T) {
 			`data: {"type":"response.output_item.added","item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"calc","arguments":"","status":"in_progress"}}`,
 			`data: {"type":"response.function_call_arguments.delta","item_id":"fc_b","delta":"{\"x\":1}"}`,
 			`data: {"type":"response.function_call_arguments.done","item_id":"fc_b"}`,
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":66,"output_tokens":11,"total_tokens":77}}}`,
 			`data: [DONE]`,
 		}
 		for _, e := range events {
@@ -599,6 +640,11 @@ func TestStream_EmitsFunctionCallToolCalls(t *testing.T) {
 	require.Len(t, toolCallMsgs, 1)
 	require.Equal(t, "call_b", toolCallMsgs[0].ToolCalls[0].ID)
 	require.Equal(t, "calc", toolCallMsgs[0].ToolCalls[0].Function.Name)
+	require.NotNil(t, toolCallMsgs[0].ResponseMeta)
+	require.NotNil(t, toolCallMsgs[0].ResponseMeta.Usage)
+	require.Equal(t, 66, toolCallMsgs[0].ResponseMeta.Usage.PromptTokens)
+	require.Equal(t, 11, toolCallMsgs[0].ResponseMeta.Usage.CompletionTokens)
+	require.Equal(t, 77, toolCallMsgs[0].ResponseMeta.Usage.TotalTokens)
 }
 
 func TestDoStreamRequest_RetryWithoutCodeInterpreter(t *testing.T) {

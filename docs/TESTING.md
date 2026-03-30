@@ -29,6 +29,12 @@ go test ./...
 go test ./trace ./openaihttp ./cmd/gptb2o-server ./backend -v
 ```
 
+### backend Responses SSE usage 回归
+
+```bash
+go test ./backend -run 'TestGenerate_ResponseCompletedUsageMappedToResponseMeta|TestStream_EmitsFunctionCallToolCalls' -v
+```
+
 ### Claude teammate 真实集成测试
 
 默认跳过，需要本机安装 `claude` 并能调用。

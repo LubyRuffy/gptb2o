@@ -63,18 +63,22 @@ func NewChatModel(config ChatModelConfig) (*ChatModel, error) {
 }
 
 func (m *ChatModel) Generate(ctx context.Context, input []*schema.Message, _ ...einoModel.Option) (*schema.Message, error) {
-	content, toolCalls, err := m.doStreamRequest(ctx, input, func(string) error { return nil })
+	content, toolCalls, usage, err := m.doStreamRequest(ctx, input, func(string) error { return nil })
 	if err != nil {
 		return nil, err
 	}
-	return schema.AssistantMessage(content, toSchemaToolCalls(toolCalls)), nil
+	msg := schema.AssistantMessage(content, toSchemaToolCalls(toolCalls))
+	if usage != nil {
+		msg.ResponseMeta = &schema.ResponseMeta{Usage: usage}
+	}
+	return msg, nil
 }
 
 func (m *ChatModel) Stream(ctx context.Context, input []*schema.Message, _ ...einoModel.Option) (*schema.StreamReader[*schema.Message], error) {
 	sr, sw := schema.Pipe[*schema.Message](64)
 	go func() {
 		defer sw.Close()
-		_, toolCalls, err := m.doStreamRequest(ctx, input, func(delta string) error {
+		_, toolCalls, usage, err := m.doStreamRequest(ctx, input, func(delta string) error {
 			if delta == "" {
 				return nil
 			}
@@ -85,11 +89,16 @@ func (m *ChatModel) Stream(ctx context.Context, input []*schema.Message, _ ...ei
 			sw.Send(nil, err)
 			return
 		}
-		if calls := toSchemaToolCalls(toolCalls); len(calls) > 0 {
-			sw.Send(&schema.Message{
+		calls := toSchemaToolCalls(toolCalls)
+		if len(calls) > 0 || usage != nil {
+			msg := &schema.Message{
 				Role:      schema.Assistant,
 				ToolCalls: calls,
-			}, nil)
+			}
+			if usage != nil {
+				msg.ResponseMeta = &schema.ResponseMeta{Usage: usage}
+			}
+			sw.Send(msg, nil)
 		}
 	}()
 	return sr, nil
@@ -137,10 +146,10 @@ func (m *ChatModel) WithToolCallHandler(handler func(*ToolCall)) *ChatModel {
 	return &cloned
 }
 
-func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message, onDelta func(string) error) (string, []*ToolCall, error) {
+func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message, onDelta func(string) error) (string, []*ToolCall, *schema.TokenUsage, error) {
 	payload, err := m.buildRequestPayload(input)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 
 	currentPayload := payload
@@ -148,9 +157,9 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 	retriedReasoningEffort := false
 	retriedSamplingParams := make(map[string]bool, 2)
 	for {
-		content, toolCalls, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
+		content, toolCalls, usage, err := m.doStreamRequestOnce(ctx, currentPayload, onDelta)
 		if err == nil {
-			return content, toolCalls, nil
+			return content, toolCalls, usage, nil
 		}
 
 		var statusErr *backendRequestStatusError
@@ -183,7 +192,7 @@ func (m *ChatModel) doStreamRequest(ctx context.Context, input []*schema.Message
 				}
 			}
 		}
-		return "", nil, err
+		return "", nil, nil, err
 	}
 }
 
@@ -202,15 +211,15 @@ func (e *backendRequestStatusError) Error() string {
 	return fmt.Sprintf("backend request failed with status %d: %s", e.status, strings.TrimSpace(e.message))
 }
 
-func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPayload, onDelta func(string) error) (string, []*ToolCall, error) {
+func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPayload, onDelta func(string) error) (string, []*ToolCall, *schema.TokenUsage, error) {
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to encode backend request: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to encode backend request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.config.BackendURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to build backend request: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to build backend request: %w", err)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", m.config.AccessToken))
@@ -224,20 +233,20 @@ func (m *ChatModel) doStreamRequestOnce(ctx context.Context, payload *requestPay
 
 	resp, err := m.config.HTTPClient.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("backend request failed: %w", err)
+		return "", nil, nil, fmt.Errorf("backend request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		return "", nil, &backendRequestStatusError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
+		return "", nil, nil, &backendRequestStatusError{status: resp.StatusCode, message: strings.TrimSpace(string(body))}
 	}
 
-	content, toolCalls, err := readBackendSSE(ctx, resp.Body, onDelta, m.toolCallHandler)
+	content, toolCalls, usage, err := readBackendSSE(ctx, resp.Body, onDelta, m.toolCallHandler)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return content, toolCalls, nil
+	return content, toolCalls, usage, nil
 }
 
 type requestItem struct {
@@ -668,32 +677,34 @@ func toSchemaToolCalls(calls []*ToolCall) []schema.ToolCall {
 	return out
 }
 
-func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) error, onToolCall func(*ToolCall)) (string, []*ToolCall, error) {
+func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) error, onToolCall func(*ToolCall)) (string, []*ToolCall, *schema.TokenUsage, error) {
 	reader := bufio.NewReader(body)
 	var dataLines []string
 	var fullContent strings.Builder
 	hasDelta := false
 	functionCalls := newFunctionCallState()
+	usageState := &schema.TokenUsage{}
+	hasUsage := false
 
 	for {
 		if ctx.Err() != nil {
-			return "", nil, ctx.Err()
+			return "", nil, nil, ctx.Err()
 		}
 
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if len(dataLines) > 0 {
-					if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
+					if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls, usageState, &hasUsage); err != nil {
 						if errors.Is(err, errStreamDone) {
-							return fullContent.String(), collectFunctionCallResults(functionCalls), nil
+							return fullContent.String(), collectFunctionCallResults(functionCalls), finalizeUsage(usageState, hasUsage), nil
 						}
-						return "", nil, err
+						return "", nil, nil, err
 					}
 				}
-				return fullContent.String(), collectFunctionCallResults(functionCalls), nil
+				return fullContent.String(), collectFunctionCallResults(functionCalls), finalizeUsage(usageState, hasUsage), nil
 			}
-			return "", nil, err
+			return "", nil, nil, err
 		}
 
 		line = strings.TrimRight(line, "\r\n")
@@ -701,11 +712,11 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 			if len(dataLines) == 0 {
 				continue
 			}
-			if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls); err != nil {
+			if err := handleBackendEvent(strings.Join(dataLines, "\n"), &fullContent, onDelta, onToolCall, &hasDelta, functionCalls, usageState, &hasUsage); err != nil {
 				if errors.Is(err, errStreamDone) {
-					return fullContent.String(), collectFunctionCallResults(functionCalls), nil
+					return fullContent.String(), collectFunctionCallResults(functionCalls), finalizeUsage(usageState, hasUsage), nil
 				}
-				return "", nil, err
+				return "", nil, nil, err
 			}
 			dataLines = dataLines[:0]
 			continue
@@ -714,7 +725,7 @@ func readBackendSSE(ctx context.Context, body io.Reader, onDelta func(string) er
 		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				return fullContent.String(), collectFunctionCallResults(functionCalls), nil
+				return fullContent.String(), collectFunctionCallResults(functionCalls), finalizeUsage(usageState, hasUsage), nil
 			}
 			if data != "" {
 				dataLines = append(dataLines, data)
@@ -747,6 +758,8 @@ func handleBackendEvent(
 	onToolCall func(*ToolCall),
 	hasDelta *bool,
 	functionCalls *functionCallState,
+	usage *schema.TokenUsage,
+	hasUsage *bool,
 ) error {
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
@@ -808,6 +821,7 @@ func handleBackendEvent(
 		}
 		return appendDelta(extractOutputItemText(raw))
 	case "response.completed", "response.created":
+		applyResponseUsage(raw, usage, hasUsage)
 		if hasDelta != nil && *hasDelta {
 			if eventType == "response.completed" {
 				return errStreamDone
@@ -829,6 +843,72 @@ func handleBackendEvent(
 		return fmt.Errorf("backend response error: %s", message)
 	}
 	return nil
+}
+
+func applyResponseUsage(raw map[string]any, usage *schema.TokenUsage, hasUsage *bool) {
+	if usage == nil || hasUsage == nil {
+		return
+	}
+
+	resp, ok := raw["response"].(map[string]any)
+	if !ok {
+		return
+	}
+	rawUsage, ok := resp["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	parsed := extractIntField(rawUsage, "input_tokens")
+	completion := extractIntField(rawUsage, "output_tokens")
+	total := extractIntField(rawUsage, "total_tokens")
+	if parsed == 0 && completion == 0 && total == 0 {
+		return
+	}
+
+	usage.PromptTokens = parsed
+	usage.CompletionTokens = completion
+	usage.TotalTokens = total
+	*hasUsage = true
+}
+
+func extractIntField(raw map[string]any, key string) int {
+	if raw == nil {
+		return 0
+	}
+	value, ok := raw[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case int32:
+		return int(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err == nil {
+			return int(n)
+		}
+	}
+	return 0
+}
+
+func finalizeUsage(usage *schema.TokenUsage, hasUsage bool) *schema.TokenUsage {
+	if !hasUsage || usage == nil {
+		return nil
+	}
+	return &schema.TokenUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
 }
 
 func extractDeltaText(raw map[string]any) string {

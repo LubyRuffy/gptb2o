@@ -526,14 +526,14 @@ func TestClaudeMessages_BadRequest(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{"model":"","messages":[],"stream":false}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":false,"max_tokens":16}`)))
 	w := httptest.NewRecorder()
 
 	h.handleMessages(w, req)
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	data, readErr := io.ReadAll(w.Body)
 	require.NoError(t, readErr)
-	require.Contains(t, string(data), "model is required")
+	require.Contains(t, string(data), "unsupported model")
 }
 
 func TestClaudeMessages_AnthropicHaikuAliasMappedToMini(t *testing.T) {

@@ -19,6 +19,7 @@
 - Trace 排障文档补充了固定调试顺序、SQLite schema 检查步骤、常用 SQL 和字段判读说明，避免直接猜列名
 - trace 回放现在会把 stream 内部 `event: error` 提炼到 `interaction.error_summary`，方便一眼区分正常收束与流内异常
 - `--show-interaction` 回放顶部现在会额外输出 `recovery_summary`，用于快速标记 Claude `/v1/messages` 常见恢复状态，例如 `missing-team`、`stale-team` 与 `duplicate-simplify-reviewer-retry`
+- `backend.ChatModel` 现在会解析流式 `response.completed.response.usage`，并把 token 统计写入最终 `schema.Message.ResponseMeta.Usage`
 
 ### Fixed
 

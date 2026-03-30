@@ -42,6 +42,7 @@ OpenAI 兼容 chat completions 接口。
 - `stream=true` 时返回官方风格 SSE
 - 支持请求级 `reasoning.effort`
 - 若服务端设置了 `--reasoning-effort`，会作为默认值
+- 对内部 `backend.ChatModel.Stream` 使用方，流式收尾消息会携带 `schema.Message.ResponseMeta.Usage`，其值来自 backend `response.completed.response.usage`
 
 示例：
 

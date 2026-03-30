@@ -33,9 +33,10 @@
 
 - `ChatModel` 负责构造 backend payload
 - 统一处理 `instructions`、`reasoning.effort`、温度参数、工具定义
-- 读取 backend SSE 并还原文本输出与 function call
+- 读取 backend SSE 并还原文本输出、function call，以及 `response.completed.response.usage`
 - 对不支持的 `xhigh` effort 和不支持的 tool type 做降级重试
 - 对真实 backend 明确拒绝的 `temperature` / `top_p` 做一次剥离后重试
+- 对流式调用，最终会补发一条 assistant 收尾消息，把 backend usage 写入 `schema.Message.ResponseMeta.Usage`，供宿主读取 token 统计
 
 ### `trace`
 

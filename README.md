@@ -11,6 +11,7 @@
 - 支持 `reasoning.effort` 和 Claude `output_config.effort`
 - 支持 Claude 新旧 teammate 协议透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
 - 支持 SQLite 全链路追踪，可凭 `interaction_id` 回放一次请求
+- `backend.ChatModel` 的流式收尾消息会携带 `schema.Message.ResponseMeta.Usage`，便于宿主侧和调试界面读取真实 token 统计
 
 相关文档：
 - [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -136,6 +137,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
 - `/v1/messages` 的兼容目标是 Claude Code 常见使用路径，而不是完整 Anthropic Messages 全量对等；支持矩阵见 [docs/CLAUDE_CODE_COMPATIBILITY.md](docs/CLAUDE_CODE_COMPATIBILITY.md)。
 - teammate / agent teams 场景已支持新旧工具协议透传，不再只依赖旧 `Task`。
 - 对 Claude Code 本地 `Agent` / `TaskOutput` / `TaskStop` 工具，gptb2o 会补充面向 GPT backend 的语义提示，避免把 `agentId` 误当成 `task_id`。
+- 对走 `backend.ChatModel.Stream` 的宿主，最终流式消息现在会带 `ResponseMeta.Usage`，可直接读取 `PromptTokens` / `CompletionTokens` / `TotalTokens`。
 
 ### Eino / ADK demo
 

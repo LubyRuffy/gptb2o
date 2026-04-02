@@ -8,10 +8,12 @@
 - 新增响应头 `X-GPTB2O-Interaction-ID`
 - 新增 `gptb2o-server --trace-db-path`、`--trace-max-body-bytes`、`--show-interaction`
 - 新增 trace 数据模型与相关单元测试
+- 新增 `gpt-5.4-mini` 内置模型支持
 
 ### Changed
 
 - `/v1/messages` 新增 Claude `output_config.effort -> reasoning.effort` 映射
+- Claude `haiku` / `claude-haiku-*` 现在映射到 `gpt-5.4-mini`
 - Claude teammate 协议兼容范围扩展为 `Agent` / `TaskOutput` / `TaskStop` / `Task`
 - Claude team 模式兼容提示扩展为 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop`
 - `gptb2o-server` 默认开启 trace，默认库路径为 `./artifacts/traces/gptb2o-trace.db`
@@ -23,6 +25,7 @@
 
 ### Fixed
 
+- 修复 `/v1/models` 之前错误暴露 `gpt-5.4-nano` 的问题；真实 ChatGPT account + Codex backend 会明确拒绝该模型，因此现在不再将其视为内置可用模型
 - 修复 Claude agent teams 在 team-scoped `Agent` 实际 spawn 失败时，仍被误判为“teammates 已 spawn、应等待 mailbox”，进而把会话错误带入 `pause_turn` / 长时间卡住的问题
 - 修复 Claude agent teams 遇到本地 `Already leading team` 脏状态时，兼容提示仍可能诱导模型重复 `TeamCreate`，而不是先 `TeamDelete` 或换新 team 名的问题
 - 修复 Claude agent teams 遇到本地 `Already leading team` 时，兼容层仍可能放任模型先 `TeamDelete` 再用同名 team / reviewer 立即重建，导致旧 teammate 仍在运行时出现同名实例并存的问题

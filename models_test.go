@@ -39,3 +39,34 @@ func TestPresetModels_ContainsLatestModel(t *testing.T) {
 		t.Fatalf("latest model %q should be in preset models list", target)
 	}
 }
+
+func TestPresetModels_ContainsGPT54Mini(t *testing.T) {
+	target := ModelNamespace + "gpt-5.4-mini"
+	if !IsSupportedModelID(target) {
+		t.Fatalf("model id %q should be supported", target)
+	}
+
+	found := false
+	for _, m := range PresetModels() {
+		if m.ID == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("model %q should be in preset models list", target)
+	}
+}
+
+func TestPresetModels_DoesNotContainGPT54Nano(t *testing.T) {
+	target := ModelNamespace + "gpt-5.4-nano"
+	if IsSupportedModelID(target) {
+		t.Fatalf("model id %q should not be supported", target)
+	}
+
+	for _, m := range PresetModels() {
+		if m.ID == target {
+			t.Fatalf("model %q should not be in preset models list", target)
+		}
+	}
+}

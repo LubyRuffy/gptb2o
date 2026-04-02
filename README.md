@@ -12,6 +12,7 @@
 - 支持 Claude 新旧 teammate 协议透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
 - 支持 SQLite 全链路追踪，可凭 `interaction_id` 回放一次请求
 - `backend.ChatModel` 的流式收尾消息会携带 `schema.Message.ResponseMeta.Usage`，便于宿主侧和调试界面读取真实 token 统计
+- 内置模型列表现已包含 `gpt-5.4`、`gpt-5.4-mini` 等可用型号；Claude `haiku` / `claude-haiku-*` 会映射到 `gpt-5.4-mini`
 
 相关文档：
 - [ARCHITECTURE.md](ARCHITECTURE.md)

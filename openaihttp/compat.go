@@ -491,7 +491,7 @@ func convertOpenAIChatMessages(messages []openaiapi.OpenAIMessage) ([]*schema.Me
 				log.Printf("[gptb2o] Skip empty tool content: tool_call_id=%s", msg.ToolCallID)
 				continue
 			}
-			result = append(result, schema.ToolMessage(msg.ToolCallID, content))
+			result = append(result, schema.ToolMessage(content, msg.ToolCallID))
 		default:
 			return nil, fmt.Errorf("unsupported role: %s", role)
 		}

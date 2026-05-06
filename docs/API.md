@@ -18,7 +18,7 @@ http://127.0.0.1:12345/v1
 
 返回内置模型列表。
 
-当前内置模型包含 `gpt-5.4`、`gpt-5.4-mini` 及历史兼容型号。
+当前内置模型包含 `gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 及历史兼容型号，不再包含 `gpt-5.1*`。
 
 示例：
 
@@ -52,7 +52,7 @@ OpenAI 兼容 chat completions 接口。
 curl http://127.0.0.1:12345/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"chatgpt/codex/gpt-5.4",
+    "model":"chatgpt/codex/gpt-5.5",
     "input":"hi",
     "stream":false,
     "reasoning":{"effort":"medium"}
@@ -96,7 +96,7 @@ Agent teams 验证提示：
 curl http://127.0.0.1:12345/v1/messages \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"gpt-5.4",
+    "model":"gpt-5.5",
     "max_tokens":1024,
     "stream":false,
     "output_config":{"effort":"high"},
@@ -116,7 +116,7 @@ Claude 风格 token 估算接口。
 curl http://127.0.0.1:12345/v1/messages/count_tokens \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"gpt-5.4",
+    "model":"gpt-5.5",
     "messages":[{"role":"user","content":"hello"}]
   }'
 ```

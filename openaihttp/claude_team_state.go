@@ -518,19 +518,6 @@ func parseClaudeTeammateMailboxEvent(body string) (eventType string, from string
 	return strings.TrimSpace(eventType), strings.TrimSpace(from)
 }
 
-func isClaudeControlTeammateMailboxBody(body string) bool {
-	if isClaudeEmptyTeammateMailboxBody(body) {
-		return true
-	}
-	typeValue, _ := parseClaudeTeammateMailboxEvent(body)
-	switch typeValue {
-	case "idle_notification", "shutdown_approved":
-		return true
-	default:
-		return false
-	}
-}
-
 func parseClaudeSpawnAckName(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -598,10 +585,6 @@ func normalizeClaudeSimplifyReviewerName(name string) string {
 	default:
 		return ""
 	}
-}
-
-func claudeToolResultIndicatesCompletedReviewerOutput(output string) bool {
-	return claudeReviewerOutputIndicatesCompleted(output)
 }
 
 func claudeMailboxMessageIndicatesCompletedReviewerOutput(body string) bool {

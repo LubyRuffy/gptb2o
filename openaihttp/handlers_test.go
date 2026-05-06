@@ -105,7 +105,7 @@ func TestChatCompletions_DefaultTools_AddWebSearch(t *testing.T) {
   "model":%q,
   "messages":[{"role":"user","content":"hi"}],
   "stream":false
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -151,7 +151,7 @@ func TestChatCompletions_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
   "messages":[{"role":"user","content":"hi"}],
   "stream":false,
   "tools":[{"type":"web_search"}]
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestResponses_StreamTrue_OfficialSSE_NoDONE(t *testing.T) {
 		require.True(t, strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "))
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -180,7 +180,7 @@ func TestResponses_StreamTrue_OfficialSSE_NoDONE(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":true}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":true}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -239,7 +239,7 @@ func TestResponses_StreamFalse_ReturnCompletedResponse(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_2\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -251,7 +251,7 @@ func TestResponses_StreamFalse_ReturnCompletedResponse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -290,14 +290,14 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 
 		switch idx {
 		case 1:
-			require.Equal(t, "gpt-5.1", payload.Model)
+			require.Equal(t, "gpt-5.4", payload.Model)
 			require.Len(t, payload.Input, 1)
 			require.Equal(t, "message", payload.Input[0].Type)
 			require.Equal(t, "user", payload.Input[0].Role)
 			require.Equal(t, "hello", payload.Input[0].Content)
 			require.NotEmpty(t, payload.Instructions)
 		case 2:
-			require.Equal(t, "gpt-5.1", payload.Model)
+			require.Equal(t, "gpt-5.4", payload.Model)
 			require.Len(t, payload.Input, 2)
 			require.Equal(t, "user", payload.Input[0].Role)
 			require.Equal(t, "hi there", payload.Input[0].Content)
@@ -305,7 +305,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 			require.Equal(t, "ok", payload.Input[1].Content)
 			require.Equal(t, "top\n\nsys", payload.Instructions)
 		case 3:
-			require.Equal(t, "gpt-5.1", payload.Model)
+			require.Equal(t, "gpt-5.4", payload.Model)
 			require.Len(t, payload.Input, 1)
 			require.Equal(t, "user", payload.Input[0].Role)
 			parts, ok := payload.Input[0].Content.([]any)
@@ -327,7 +327,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_x\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -340,7 +340,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("input-string", func(t *testing.T) {
-		reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hello","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+		reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hello","stream":false}`, gptb2o.ModelNamespace+"gpt-5.4"))
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -359,7 +359,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
     {"role":"assistant","content":"ok"}
   ],
   "stream":false
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -381,7 +381,7 @@ func TestResponses_Input_String_And_MessageArray(t *testing.T) {
     }
   ],
   "stream":false
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -409,7 +409,7 @@ func TestResponses_DefaultTools_AddsWebSearch(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -421,7 +421,7 @@ func TestResponses_DefaultTools_AddsWebSearch(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -450,7 +450,7 @@ func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_2\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -467,7 +467,7 @@ func TestResponses_DefaultTools_KeepExplicitWebSearch(t *testing.T) {
   "input":"hi",
   "stream":false,
   "tools":[{"type":"web_search"}]
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -491,7 +491,7 @@ func TestResponses_PassesThroughCustomFunctionTools(t *testing.T) {
 		gotTools = append(gotTools, payload.Tools...)
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_1\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_1\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backendServer.Close)
@@ -511,7 +511,7 @@ func TestResponses_PassesThroughCustomFunctionTools(t *testing.T) {
     {"type":"function","function":{"name":"Task","description":"run task","parameters":{"type":"object","properties":{"id":{"type":"string"}}}}},
     {"type":"code_interpreter"}
   ]
-}`, gptb2o.ModelNamespace+"gpt-5.1"))
+}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -583,11 +583,11 @@ func TestResponses_NonCodexModel_DefaultInstructions_WhenEmpty(t *testing.T) {
 			Instructions string `json:"instructions"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Equal(t, "gpt-5.1", payload.Model)
+		require.Equal(t, "gpt-5.4", payload.Model)
 		require.NotEmpty(t, strings.TrimSpace(payload.Instructions))
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok2\",\"object\":\"response\",\"model\":\"gpt-5.1\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok2\",\"object\":\"response\",\"model\":\"gpt-5.4\"}}\n\n")
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(backend.Close)
@@ -599,7 +599,7 @@ func TestResponses_NonCodexModel_DefaultInstructions_WhenEmpty(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.1"))
+	reqBody := []byte(fmt.Sprintf(`{"model":%q,"input":"hi","stream":false}`, gptb2o.ModelNamespace+"gpt-5.4"))
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -746,7 +746,7 @@ func TestResponses_ReasoningEffort_XHighUnsupported_RetryToHigh(t *testing.T) {
 			require.Equal(t, "xhigh", payload.Reasoning.Effort)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"error":{"message":"Unsupported value: 'xhigh' is not supported with the 'gpt-5.1-codex' model. Supported values are: 'low', 'medium', and 'high'.","type":"invalidrequesterror","param":"reasoning.effort","code":"unsupported_value"}}`)
+			fmt.Fprint(w, `{"error":{"message":"Unsupported value: 'xhigh' is not supported with the 'gpt-5.3-codex' model. Supported values are: 'low', 'medium', and 'high'.","type":"invalidrequesterror","param":"reasoning.effort","code":"unsupported_value"}}`)
 			return
 		}
 		require.Equal(t, "high", payload.Reasoning.Effort)

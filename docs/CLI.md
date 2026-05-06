@@ -80,7 +80,7 @@ sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
 ### 常用参数
 
 - `--model`
-  默认 `chatgpt/codex/gpt-5.4`
+  默认 `chatgpt/codex/gpt-5.5`
 - `--input`
   用户输入
 - `--image`
@@ -105,14 +105,14 @@ sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
 ```bash
 go run ./cmd/gptb2o-adk \
   --auth-source codex \
-  --model chatgpt/codex/gpt-5.4 \
+  --model chatgpt/codex/gpt-5.5 \
   --input "你好"
 ```
 
 ```bash
 go run ./cmd/gptb2o-adk \
   --auth-source codex \
-  --model chatgpt/codex/gpt-5.4 \
+  --model chatgpt/codex/gpt-5.5 \
   --reasoning-effort high \
   --image ./demo.png \
   --input "描述这张图"

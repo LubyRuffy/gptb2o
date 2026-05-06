@@ -47,7 +47,7 @@ func TestClaudeMessages_ConvertToolResultAndTools_OK(t *testing.T) {
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "tools":[{"name":"Read","description":"read file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}],
@@ -87,7 +87,7 @@ func TestClaudeMessages_NonStream_AddsPendingTeamMailboxReminder(t *testing.T) {
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[
@@ -122,7 +122,7 @@ func TestClaudeMessages_NonStream_PendingTeamMailboxEmptyResponsePausesTurn(t *t
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[
@@ -165,7 +165,7 @@ func TestClaudeMessages_Stream_PendingTeamMailboxEmptyResponsePausesTurn(t *test
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":true,
   "max_tokens":1024,
   "messages":[
@@ -211,7 +211,7 @@ func TestClaudeMessages_Stream_PartialTeamMailboxResponseStillPausesTurn(t *test
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":true,
   "max_tokens":1024,
   "messages":[
@@ -266,7 +266,7 @@ func TestClaudeMessages_Stream_PartialTeamMailboxWaitingTextStillPausesTurn(t *t
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":true,
   "max_tokens":1024,
   "messages":[
@@ -330,7 +330,7 @@ func TestClaudeMessages_NonStream_PartialTeamMailboxWaitingTextStillPausesTurn(t
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[
@@ -389,7 +389,7 @@ func TestClaudeMessages_Stream_ShutdownApprovalsStillPendingPausesTurn(t *testin
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":true,
   "max_tokens":1024,
   "messages":[
@@ -462,7 +462,7 @@ func TestClaudeMessages_NonStream_ShutdownApprovalsStillPendingPausesTurn(t *tes
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[

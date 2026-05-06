@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/LubyRuffy/gptb2o"
 	"github.com/LubyRuffy/gptb2o/backend"
@@ -366,37 +365,4 @@ func stripJSONField(jsonStr string, field string) string {
 		return jsonStr
 	}
 	return string(out)
-}
-
-// #region agent log
-const debugLogPath = "/Users/zhaowu/go/src/github.com/LubyRuffy/gptb2o/.cursor/debug-133afd.log"
-
-func debugLogNDJSON(location, message string, data map[string]any, hypothesisID string) {
-	entry := map[string]any{
-		"sessionId":    "133afd",
-		"timestamp":    time.Now().UnixMilli(),
-		"location":     location,
-		"message":      message,
-		"data":         data,
-		"hypothesisId": hypothesisID,
-	}
-	b, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile(debugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
-}
-
-func hasClaudeToolByName(tools []claudeTool, name string) bool {
-	for _, t := range tools {
-		if strings.EqualFold(strings.TrimSpace(t.Name), name) {
-			return true
-		}
-	}
-	return false
 }

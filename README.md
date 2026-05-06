@@ -12,7 +12,7 @@
 - 支持 Claude 新旧 teammate 协议透传：`Agent` / `TaskOutput` / `TaskStop` / `Task`
 - 支持 SQLite 全链路追踪，可凭 `interaction_id` 回放一次请求
 - `backend.ChatModel` 的流式收尾消息会携带 `schema.Message.ResponseMeta.Usage`，便于宿主侧和调试界面读取真实 token 统计
-- 内置模型列表现已包含 `gpt-5.4`、`gpt-5.4-mini` 等可用型号；Claude `haiku` / `claude-haiku-*` 会映射到 `gpt-5.4-mini`
+- 内置模型列表现已包含 `gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 等可用型号；不再包含 `gpt-5.1*`；Claude `haiku` / `claude-haiku-*` 会映射到 `gpt-5.4-mini`
 
 相关文档：
 - [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -55,7 +55,7 @@ curl http://127.0.0.1:12345/v1/models
 
 curl http://127.0.0.1:12345/v1/responses \
   -H 'Content-Type: application/json' \
-  -d '{"model":"chatgpt/codex/gpt-5.4","input":"hi","stream":false}'
+  -d '{"model":"chatgpt/codex/gpt-5.5","input":"hi","stream":false}'
 ```
 
 ### 4. 查看全链路追踪
@@ -103,7 +103,7 @@ sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
 curl http://127.0.0.1:12345/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"chatgpt/codex/gpt-5.4",
+    "model":"chatgpt/codex/gpt-5.5",
     "input":"解释一下当前仓库做什么",
     "stream":false,
     "reasoning":{"effort":"medium"}
@@ -116,7 +116,7 @@ curl http://127.0.0.1:12345/v1/responses \
 curl http://127.0.0.1:12345/v1/messages \
   -H 'Content-Type: application/json' \
   -d '{
-    "model":"gpt-5.4",
+    "model":"gpt-5.5",
     "max_tokens":1024,
     "stream":false,
     "output_config":{"effort":"medium"},
@@ -129,7 +129,7 @@ curl http://127.0.0.1:12345/v1/messages \
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:12345 \
 ANTHROPIC_API_KEY=local-dev \
-claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
+claude --setting-sources project,local --model chatgpt/codex/gpt-5.5
 ```
 
 说明：
@@ -145,7 +145,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.4
 ```bash
 go run ./cmd/gptb2o-adk \
   --auth-source codex \
-  --model chatgpt/codex/gpt-5.4 \
+  --model chatgpt/codex/gpt-5.5 \
   --input "你好"
 ```
 

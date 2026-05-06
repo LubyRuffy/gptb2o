@@ -234,7 +234,7 @@ func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -245,7 +245,7 @@ func TestClaudeMessages_NonStream_OK(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Equal(t, "message", resp.Type)
 	require.Equal(t, "assistant", resp.Role)
-	require.Equal(t, "gpt-5.1", resp.Model)
+	require.Equal(t, "gpt-5.4", resp.Model)
 	require.Len(t, resp.Content, 1)
 	require.Equal(t, "text", resp.Content[0].Type)
 	require.Equal(t, "pong", resp.Content[0].Text)
@@ -263,31 +263,31 @@ func TestClaudeMessages_ToolChoiceModes(t *testing.T) {
 	}{
 		{
 			name:          "none disables tools",
-			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
+			body:          `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
 			wantStatus:    http.StatusOK,
 			wantToolCount: 0,
 		},
 		{
 			name:          "any requires tools",
-			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`,
+			body:          `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`,
 			wantStatus:    http.StatusBadRequest,
 			wantErrSubstr: "tools is required when tool_choice.type=any",
 		},
 		{
 			name:          "tool requires matching tool name",
-			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
+			body:          `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
 			wantStatus:    http.StatusBadRequest,
 			wantErrSubstr: "tool_choice.name not found in tools",
 		},
 		{
 			name:          "invalid tool_choice type rejected",
-			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"bogus"}}`,
+			body:          `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"bogus"}}`,
 			wantStatus:    http.StatusBadRequest,
 			wantErrSubstr: "invalid tool_choice.type",
 		},
 		{
 			name:          "tool filters downstream tools",
-			body:          `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}},{"name":"Edit","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
+			body:          `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}},{"name":"Edit","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"Edit"}}`,
 			wantStatus:    http.StatusOK,
 			wantToolCount: 1,
 		},
@@ -336,7 +336,7 @@ func TestClaudeMessages_NonStream_BackendErrorUsesCompatError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":16}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":16}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -357,7 +357,7 @@ func TestClaudeMessages_Stream_BackendCreationErrorUsesCompatError(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -378,7 +378,7 @@ func TestClaudeMessages_Stream_BackendRecvErrorUsesCompatError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -403,7 +403,7 @@ func TestClaudeMessages_Stream_BackendRecvErrorAfterStartEmitsSSEError(t *testin
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -428,7 +428,7 @@ func TestClaudeMessages_Stream_TextEventSequence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -461,7 +461,7 @@ func TestClaudeMessages_Stream_ToolUseEventSequence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -499,7 +499,7 @@ func TestClaudeMessages_Stream_OK(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":true,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":true,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -603,7 +603,7 @@ func TestClaudeMessages_NonStream_ToolUse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -640,7 +640,7 @@ func TestClaudeMessages_NonStream_TaskToolUseEmptyArgumentsIgnored(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -681,7 +681,7 @@ func TestClaudeMessages_NonStream_TaskToolUseSkipsInProgressPartialArguments(t *
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -719,7 +719,7 @@ func TestClaudeMessages_Stream_ToolUse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -761,7 +761,7 @@ func TestClaudeMessages_Stream_TaskToolUse_ProtocolInputJSONDelta(t *testing.T) 
 			"max_turns":40
 		}`,
 		requestBody: `{
-			"model":"gpt-5.1",
+			"model":"gpt-5.4",
 			"messages":[{"role":"user","content":"使用 code-simplifier 优化代码"}],
 			"stream":true,
 			"max_tokens":1024,
@@ -798,7 +798,7 @@ func TestClaudeMessages_Stream_AgentToolUse_ProtocolInputJSONDelta(t *testing.T)
 			"subagent_type":"general-purpose"
 		}`,
 		requestBody: `{
-			"model":"gpt-5.1",
+			"model":"gpt-5.4",
 			"messages":[{"role":"user","content":"调用 agent 工具"}],
 			"stream":true,
 			"max_tokens":1024,
@@ -894,7 +894,7 @@ func TestClaudeMessages_Stream_TaskToolUseSkipsEmptyArguments(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -935,7 +935,7 @@ func TestClaudeMessages_Stream_TaskToolUseSkipsInProgressPartialArguments(t *tes
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":1024}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -963,7 +963,7 @@ func TestClaudeMessages_Stream_EmptyStillEmitsContentBlock(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":128}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":128}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 

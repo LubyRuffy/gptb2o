@@ -48,7 +48,7 @@ func TestClaudeMessages_NonStream_AddsStaleTeamRetryReminder(t *testing.T) {
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[
@@ -92,7 +92,7 @@ func TestClaudeMessages_NonStream_StaleTeamState_BlocksAgentAndTeamCreateTools(t
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "tools":[
@@ -192,7 +192,7 @@ func TestClaudeMessages_NonStream_MissingTeamState_KeepsAgentAndInjectsReminder(
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "tools":[
@@ -421,7 +421,7 @@ func TestClaudeMessages_NonStream_CompletedSimplifyReview_BlocksFurtherAgentAndT
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "tools":[
@@ -486,7 +486,7 @@ func TestClaudeMessages_NonStream_CompletedSimplifyReviewMailbox_BlocksFurtherAg
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "tools":[
@@ -544,7 +544,7 @@ func TestClaudeMessages_NonStream_StaleTeamRetryReminder_DoesNotAllowFurtherTeam
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":false,
   "max_tokens":1024,
   "messages":[
@@ -598,7 +598,7 @@ func TestClaudeMessages_Stream_StaleTeamRetryReminder_DoesNotAllowFurtherTeamSpa
 	require.NoError(t, err)
 
 	body := []byte(`{
-  "model":"gpt-5.1",
+  "model":"gpt-5.4",
   "stream":true,
   "max_tokens":1024,
   "messages":[
@@ -746,7 +746,7 @@ func TestClaudeMessages_Stream_MessageStartStopReasonIsNull(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":16}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -781,7 +781,7 @@ func TestClaudeMessages_NonStream_StopSequences(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024,"stop_sequences":["STOP"]}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1024,"stop_sequences":["STOP"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -809,7 +809,7 @@ func TestClaudeMessages_NonStream_MaxTokens(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":false,"max_tokens":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -836,7 +836,7 @@ func TestClaudeMessages_Stream_StopSequences(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1024,"stop_sequences":["STOP"]}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1024,"stop_sequences":["STOP"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -876,7 +876,7 @@ func TestClaudeMessages_Stream_MaxTokens(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	body := []byte(`{"model":"gpt-5.1","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1}`)
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true,"max_tokens":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 

@@ -214,13 +214,13 @@ func TestClaudeMessages_ToolChoiceModes(t *testing.T) {
     }{
         {
             name: "none disables tools",
-            body: `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
+            body: `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Read","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
             wantStatus: http.StatusOK,
             wantToolCount: 0,
         },
         {
             name: "any requires tools",
-            body: `{"model":"gpt-5.1","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`,
+            body: `{"model":"gpt-5.4","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"any"}}`,
             wantStatus: http.StatusBadRequest,
             wantErrSubstr: "tools is required when tool_choice.type=any",
         },

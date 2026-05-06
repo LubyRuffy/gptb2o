@@ -347,15 +347,6 @@ func filterClaudeStaleTeamRecoveryTools(tools []openaiapi.OpenAITool) []openaiap
 	return filterClaudeToolsByName(tools, "Agent", "TeamCreate")
 }
 
-func hasToolByName(tools []openaiapi.OpenAITool, name string) bool {
-	for _, t := range tools {
-		if strings.EqualFold(strings.TrimSpace(t.Function.Name), name) {
-			return true
-		}
-	}
-	return false
-}
-
 func filterClaudeToolsByName(tools []openaiapi.OpenAITool, blockedNames ...string) []openaiapi.OpenAITool {
 	if len(tools) == 0 || len(blockedNames) == 0 {
 		return tools

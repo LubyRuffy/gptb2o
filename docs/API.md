@@ -42,8 +42,9 @@ OpenAI 兼容 chat completions 接口。
 特性：
 - `stream=false` 时返回最终 `response` JSON
 - `stream=true` 时返回官方风格 SSE
-- 支持请求级 `reasoning.effort`
+- 支持请求级 `reasoning.effort`：`none`、`low`、`medium`、`high`、`xhigh`
 - 若服务端设置了 `--reasoning-effort`，会作为默认值
+- 未显式传入时使用 backend 默认值 `medium`
 - 对内部 `backend.ChatModel.Stream` 使用方，流式收尾消息会携带 `schema.Message.ResponseMeta.Usage`，其值来自 backend `response.completed.response.usage`
 
 示例：
@@ -68,7 +69,7 @@ Claude Messages 兼容接口。
 
 特性：
 - 兼容 `model/messages/system/stream/max_tokens/tools`
-- 支持 `output_config.effort`
+- 支持 `output_config.effort`：`none`、`low`、`medium`、`high`、`xhigh`
 - 支持 `tool_use` / `tool_result`
 - 支持 teammate 新旧协议工具透传：`Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` / `Task`
 - 会为 Claude Code 本地 `Agent` / `TeamCreate` / `SendMessage` / `TaskOutput` / `TaskStop` 工具补充语义提示，避免把 `agentId` 误作 `task_id`，减少把 `Agent.resume` 误当作轮询 teammate 输出的概率，并约束 lead 先消费 unread mailbox 结果再结束/cleanup；如果本地工具返回 `Already leading team`，会明确禁止“先 `TeamDelete` 再用同名 team / 同名 reviewer 立即重建”的模式，并把出错的 `team_name` 标成当前恢复分支内不可再用，要求改用新的唯一 team 名；如果 team-scoped `Agent` 直接返回 `Team "<name>" does not exist`，会先禁止继续 `Agent` 重试，只保留 `TeamCreate` 恢复入口；若 `/simplify` 的三名 reviewer 已在当前会话分支通过 teammate mailbox 返回一整轮评审结果，兼容层会直接阻止后续重复 `Agent` / `TeamCreate`，要求模型汇总现有 reviewer 结果而不是再起第二轮 reviewer

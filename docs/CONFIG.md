@@ -38,7 +38,7 @@
 - `--originator`
   覆盖默认 `codex_cli_rs`
 - `--reasoning-effort`
-  作为默认推理强度，适用于未显式传入 effort 的请求
+  作为默认推理强度，适用于未显式传入 effort 的请求；支持 `none|low|medium|high|xhigh`，未设置时使用 backend 默认值 `medium`
 
 ## Trace 配置
 
@@ -61,6 +61,7 @@
 
 - Claude 客户端请求中的 `output_config.effort`
 - 会映射到 backend `reasoning.effort`
+- 支持值：`none`、`low`、`medium`、`high`、`xhigh`
 - 若未传，则回退到服务端 `--reasoning-effort`
 
 ### 工具协议

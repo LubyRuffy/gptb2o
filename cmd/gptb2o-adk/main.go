@@ -34,7 +34,7 @@ func main() {
 		authSource      = flag.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
 		originator      = flag.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
 		instructions    = flag.String("instructions", backend.DefaultInstructions, "system instructions for the model")
-		reasoningEffort = flag.String("reasoning-effort", "", "reasoning effort forwarded to backend (e.g. low|medium|high)")
+		reasoningEffort = flag.String("reasoning-effort", "", "reasoning effort forwarded to backend (none|low|medium|high|xhigh; backend default: medium)")
 		noTools         = flag.Bool("no-tools", false, "disable built-in tools (bash)")
 	)
 	flag.Parse()

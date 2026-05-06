@@ -96,7 +96,7 @@ sqlite3 -header -column ./artifacts/traces/gptb2o-trace.db \
 - `--instructions`
   模型系统提示词
 - `--reasoning-effort`
-  请求级推理强度
+  请求级推理强度：`none|low|medium|high|xhigh`；未设置时使用 backend 默认值 `medium`
 - `--no-tools`
   关闭默认 bash 工具
 
@@ -113,7 +113,7 @@ go run ./cmd/gptb2o-adk \
 go run ./cmd/gptb2o-adk \
   --auth-source codex \
   --model chatgpt/codex/gpt-5.5 \
-  --reasoning-effort high \
+  --reasoning-effort xhigh \
   --image ./demo.png \
   --input "描述这张图"
 ```

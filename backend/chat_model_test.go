@@ -224,6 +224,17 @@ func TestBuildRequestPayload_ReasoningEffortSerialized(t *testing.T) {
 	require.Contains(t, string(data), `"reasoning":{"effort":"high"}`)
 }
 
+func TestBuildRequestPayload_ReasoningEffortNonePreserved(t *testing.T) {
+	m := newTestChatModelWithReasoning("", "none")
+	input := []*schema.Message{
+		{Role: schema.User, Content: "hello"},
+	}
+	payload, err := m.buildRequestPayload(input)
+	require.NoError(t, err)
+	require.NotNil(t, payload.Reasoning)
+	require.Equal(t, "none", payload.Reasoning.Effort)
+}
+
 func TestBuildRequestPayload_ReasoningEffortUndefinedIgnored(t *testing.T) {
 	m := newTestChatModelWithReasoning("", "[undefined]")
 	input := []*schema.Message{

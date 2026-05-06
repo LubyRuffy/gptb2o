@@ -38,7 +38,7 @@ func run(args []string, stdout io.Writer) error {
 		backendURL      = flagSet.String("backend-url", "", "chatgpt backend responses url (default: https://chatgpt.com/backend-api/codex/responses)")
 		authSource      = flagSet.String("auth-source", "codex", "auth source: codex|opencode|env|auto")
 		originator      = flagSet.String("originator", "", "Originator/User-Agent header (default: codex_cli_rs)")
-		reasoningEffort = flagSet.String("reasoning-effort", "", "default reasoning effort forwarded to backend (e.g. low|medium|high)")
+		reasoningEffort = flagSet.String("reasoning-effort", "", "default reasoning effort forwarded to backend (none|low|medium|high|xhigh; backend default: medium)")
 		traceDBPath     = flagSet.String("trace-db-path", defaultTraceDBPath, "sqlite path for full-chain tracing")
 		traceMaxBody    = flagSet.Int("trace-max-body-bytes", 64<<10, "max body bytes stored per trace event")
 		showInteraction = flagSet.String("show-interaction", "", "print a traced interaction by id and exit")

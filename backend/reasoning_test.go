@@ -11,6 +11,7 @@ func TestNormalizeReasoningEffort(t *testing.T) {
 		{name: "empty", in: "", out: ""},
 		{name: "undefined", in: "[undefined]", out: ""},
 		{name: "null", in: "null", out: ""},
+		{name: "none", in: "none", out: "none"},
 		{name: "low", in: "low", out: "low"},
 		{name: "medium_keep_case", in: "MeDiuM", out: "MeDiuM"},
 		{name: "high", in: "HIGH", out: "HIGH"},

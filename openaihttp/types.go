@@ -23,7 +23,7 @@ type Config struct {
 	AuthProvider AuthProvider
 	// Originator 可选，用于请求头 Originator/User-Agent；为空时使用后端默认值。
 	Originator string
-	// ReasoningEffort 可选，透传到 backend `reasoning.effort`（如 low/medium/high）。
+	// ReasoningEffort 可选，透传到 backend `reasoning.effort`（none/low/medium/high/xhigh）。
 	ReasoningEffort string
 	// SystemFingerprint chat.completions 用；默认 "fp_gptb2o"。
 	SystemFingerprint string

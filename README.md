@@ -134,7 +134,7 @@ claude --setting-sources project,local --model chatgpt/codex/gpt-5.5
 
 说明：
 - Claude CLI 推荐保留 `--setting-sources project,local`，否则可能优先走 OAuth 通道。
-- `/v1/messages` 已兼容 `output_config.effort`。
+- `/v1/messages` 已兼容 `output_config.effort`，支持 `none`、`low`、`medium`、`high`、`xhigh`；未显式传入时使用 backend 默认值 `medium`。
 - `/v1/messages` 的兼容目标是 Claude Code 常见使用路径，而不是完整 Anthropic Messages 全量对等；支持矩阵见 [docs/CLAUDE_CODE_COMPATIBILITY.md](docs/CLAUDE_CODE_COMPATIBILITY.md)。
 - teammate / agent teams 场景已支持新旧工具协议透传，不再只依赖旧 `Task`。
 - 对 Claude Code 本地 `Agent` / `TaskOutput` / `TaskStop` 工具，gptb2o 会补充面向 GPT backend 的语义提示，避免把 `agentId` 误当成 `task_id`。
@@ -153,7 +153,7 @@ go run ./cmd/gptb2o-adk \
 
 - 固定默认推理强度：
 ```bash
-go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort high
+go run ./cmd/gptb2o-server --auth-source codex --reasoning-effort xhigh
 ```
 
 - 覆盖默认 trace 库路径：

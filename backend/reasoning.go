@@ -4,7 +4,7 @@ import "strings"
 
 // NormalizeReasoningEffort 对 effort 做最小规范化：
 // - 清理 undefined/null 占位值
-// - 其他值按原样透传（只做 trim），例如 xhigh。
+// - 其他值按原样透传（只做 trim），例如 none/xhigh。
 func NormalizeReasoningEffort(s string) string {
 	trimmed := strings.TrimSpace(s)
 	normalized := strings.ToLower(trimmed)

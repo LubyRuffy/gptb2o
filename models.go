@@ -14,7 +14,7 @@ const (
 	LegacyModelNamespace = "opencode/codex/"
 
 	// DefaultModelID 是对外默认推荐/选中的模型 ID（不带命名空间）。
-	DefaultModelID = "gpt-5.5"
+	DefaultModelID = "gpt-5.6-sol"
 	// DefaultModelFullID 是对外默认推荐/选中的模型 ID（带 ModelNamespace）。
 	DefaultModelFullID = ModelNamespace + DefaultModelID
 )
@@ -26,6 +26,9 @@ type presetModelDef struct {
 
 // 使用固定顺序，确保客户端“默认选中第一项”时稳定得到 DefaultModelID。
 var presetModelDefs = []presetModelDef{
+	{ID: "gpt-5.6-sol", Name: "GPT-5.6 Sol"},
+	{ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra"},
+	{ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna"},
 	{ID: "gpt-5.5", Name: "GPT-5.5"},
 	{ID: "gpt-5.4", Name: "GPT-5.4"},
 	{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini"},

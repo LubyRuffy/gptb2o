@@ -68,6 +68,81 @@ func TestIntegration_Responses_RealBackend_StreamFalse(t *testing.T) {
 	require.True(t, ok, "missing id in body=%s", string(body))
 }
 
+func TestIntegration_Responses_RealBackend_GPT56Variants(t *testing.T) {
+	if strings.TrimSpace(os.Getenv("GPTB2O_RUN_REAL_IT")) == "" {
+		t.Skip("set GPTB2O_RUN_REAL_IT=1 to run real-backend integration test")
+	}
+
+	accessToken := strings.TrimSpace(os.Getenv("GPTB2O_ACCESS_TOKEN"))
+
+	if accessToken == "" {
+		t.Skip("set GPTB2O_ACCESS_TOKEN to run real-backend integration test")
+	}
+
+	accountID := strings.TrimSpace(os.Getenv("GPTB2O_ACCOUNT_ID"))
+	server, client := newRealBackendTestServer(t, accessToken, accountID)
+
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		t.Run(modelID, func(t *testing.T) {
+			reqBody := []byte(fmt.Sprintf(
+				`{"model":%q,"input":"Reply exactly OK.","stream":false,"reasoning":{"effort":"low"}}`,
+				gptb2o.ModelNamespace+modelID,
+			))
+			req, err := http.NewRequestWithContext(
+				t.Context(),
+				http.MethodPost,
+				server.URL+"/v1/responses",
+				bytes.NewReader(reqBody),
+			)
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.StatusCode, "status=%d body=%s", resp.StatusCode, string(body))
+
+			var completed map[string]any
+
+			require.NoError(t, json.Unmarshal(body, &completed), "body=%s", string(body))
+			require.Equal(t, modelID, completed["model"])
+		})
+	}
+}
+
+func newRealBackendTestServer(t *testing.T, accessToken, accountID string) (*httptest.Server, *http.Client) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	client := &http.Client{
+		Transport:     nil,
+		CheckRedirect: nil,
+		Jar:           nil,
+		Timeout:       60 * time.Second,
+	}
+	require.NoError(t, openaihttp.RegisterGinRoutes(router, openaihttp.Config{
+		BasePath:          "/v1",
+		BackendURL:        "",
+		Originator:        "",
+		ReasoningEffort:   "",
+		SystemFingerprint: "",
+		HTTPClient:        client,
+		Tracer:            nil,
+		AuthProvider: func(_ context.Context) (string, string, error) {
+			return accessToken, accountID, nil
+		},
+	}))
+
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	return server, client
+}
+
 func TestIntegration_Responses_RealBackend_StreamFalse_WithReasoningEffort(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("GPTB2O_RUN_REAL_IT")) == "" {
 		t.Skip("set GPTB2O_RUN_REAL_IT=1 to run real-backend integration test")

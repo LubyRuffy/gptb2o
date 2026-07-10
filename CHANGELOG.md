@@ -8,6 +8,7 @@
 - 新增响应头 `X-GPTB2O-Interaction-ID`
 - 新增 `gptb2o-server --trace-db-path`、`--trace-max-body-bytes`、`--show-interaction`
 - 新增 trace 数据模型与相关单元测试
+- 新增 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 内置模型支持，并将 `gpt-5.6-sol` 作为默认推荐模型
 - 新增 `gpt-5.5` 内置模型支持，并作为默认推荐模型
 - 新增 `gpt-5.4-mini` 内置模型支持
 
@@ -24,7 +25,7 @@
 - trace 回放现在会把 stream 内部 `event: error` 提炼到 `interaction.error_summary`，方便一眼区分正常收束与流内异常
 - `--show-interaction` 回放顶部现在会额外输出 `recovery_summary`，用于快速标记 Claude `/v1/messages` 常见恢复状态，例如 `missing-team`、`stale-team` 与 `duplicate-simplify-reviewer-retry`
 - `backend.ChatModel` 现在会解析流式 `response.completed.response.usage`，并把 token 统计写入最终 `schema.Message.ResponseMeta.Usage`
-- `--reasoning-effort`、`reasoning.effort` 与 Claude `output_config.effort` 的文档枚举更新为 `none|low|medium|high|xhigh`，与 GPT-5.5 官方支持级别一致
+- `--reasoning-effort`、`reasoning.effort` 与 Claude `output_config.effort` 的文档枚举更新为 `none|low|medium|high|xhigh`，与最新 GPT-5 系列支持级别一致
 
 ### Fixed
 

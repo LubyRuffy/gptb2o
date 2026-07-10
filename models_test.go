@@ -18,6 +18,10 @@ func TestPresetModels_DefaultFirst(t *testing.T) {
 }
 
 func TestDefaultModel_IsSupported(t *testing.T) {
+	if gptb2o.DefaultModelID != "gpt-5.6-sol" {
+		t.Fatalf("default model id = %q, want %q", gptb2o.DefaultModelID, "gpt-5.6-sol")
+	}
+
 	if !gptb2o.IsSupportedModelID(gptb2o.DefaultModelID) {
 		t.Fatalf("default model id %q should be supported", gptb2o.DefaultModelID)
 	}
@@ -27,24 +31,39 @@ func TestDefaultModel_IsSupported(t *testing.T) {
 	}
 }
 
-func TestPresetModels_ContainsLatestModel(t *testing.T) {
-	target := gptb2o.ModelNamespace + "gpt-5.5"
-	if !gptb2o.IsSupportedModelID(target) {
-		t.Fatalf("latest model id %q should be supported", target)
-	}
+func TestPresetModels_ContainsGPT56Variants(t *testing.T) {
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		target := gptb2o.ModelNamespace + modelID
+		if !gptb2o.IsSupportedModelID(target) {
+			t.Fatalf("model id %q should be supported", target)
+		}
 
-	found := false
+		found := false
 
-	for _, m := range gptb2o.PresetModels() {
-		if m.ID == target {
-			found = true
+		for _, model := range gptb2o.PresetModels() {
+			if model.ID == target {
+				found = true
 
-			break
+				break
+			}
+		}
+
+		if !found {
+			t.Fatalf("model %q should be in preset models list", target)
 		}
 	}
+}
 
-	if !found {
-		t.Fatalf("latest model %q should be in preset models list", target)
+func TestPresetModels_DoesNotContainBareGPT56(t *testing.T) {
+	target := gptb2o.ModelNamespace + "gpt-5.6"
+	if gptb2o.IsSupportedModelID(target) {
+		t.Fatalf("model id %q should not be supported", target)
+	}
+
+	for _, model := range gptb2o.PresetModels() {
+		if model.ID == target {
+			t.Fatalf("model %q should not be in preset models list", target)
+		}
 	}
 }
 

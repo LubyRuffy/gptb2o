@@ -81,6 +81,12 @@ GPTB2O_RUN_CLAUDE_IT=1 go test ./openaihttp -run TeammateCLI -v
 GPTB2O_RUN_REAL_IT=1 go test ./openaihttp -run RealBackend -v
 ```
 
+仅验证 GPT-5.6 Sol、Terra、Luna 三个受限预览模型：
+
+```bash
+GPTB2O_RUN_REAL_IT=1 go test ./openaihttp -run TestIntegration_Responses_RealBackend_GPT56Variants -v
+```
+
 如果要专门验证 Claude `/v1/messages` 在真实 backend 下对 `temperature` fallback 的兼容，可执行：
 
 ```bash
